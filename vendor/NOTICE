@@ -1,0 +1,20 @@
+Readability
+Copyright (c) 2010 Arc90 Inc
+Copyright (c) 2010-2026 Mozilla and Contributors
+
+Vendored provenance (verified 2026-11-03):
+  Source:   https://github.com/mozilla/readability
+  File:     Readability.js
+  Commit:   ab4027a8b37669745016869a37a504727992b2ba (master, 2026-07-09;
+            this is AFTER the 0.6.0 release tag — the file is NOT the
+            0.6.0 tag blob, which differs at byte 4887 / 89,980 bytes)
+  Method:   byte-for-byte comparison against the GitHub contents API
+            response for that ref; local git blob SHA-1
+            5cff4540c63fa2dd1471804ac7c919bd988638ce matched the
+            upstream-reported blob SHA exactly, and decoded bytes compared
+            equal (90,944 bytes).
+  Pin:      SHA-256 of the vendored file:
+            e9330028c8a5a4aa7d75147be2605d520f7f213c7b28474947dc0e9c984e9bed
+  License:  Apache-2.0 — see vendor/LICENSE.md (shipped unmodified).
+  Integrity test: tests/unit/readability-integrity.test.js (plain Node,
+            pinned hashes; fails if the vendored bytes ever change).
