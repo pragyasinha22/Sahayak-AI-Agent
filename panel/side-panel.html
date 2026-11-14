@@ -56,16 +56,40 @@
         </nav>
       </header>
 
-      <!-- Chat view: Slice 1.1.2 placeholders, kept intact. -->
+      <!-- Chat view: in-memory page-grounded conversation (Slice 2.1.1). -->
       <div id="view-chat" class="view view-chat">
         <section
           id="chat-area"
           class="chat-area"
           aria-label="Chat with the current page"
         >
-          <p class="placeholder">
-            Chat with the current page will appear here (Week 2).
-          </p>
+          <div
+            id="chat-history"
+            class="chat-history"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+            aria-label="Conversation"
+          >
+            <p class="chat-intro">
+              Ask a question about this page. Answers use only its readable article text.
+            </p>
+          </div>
+          <p id="chat-status" class="chat-status" role="status" hidden></p>
+          <form id="chat-form" class="chat-composer">
+            <label class="sr-only" for="chat-question">Question about this page</label>
+            <input
+              id="chat-question"
+              class="chat-input"
+              type="text"
+              autocomplete="off"
+              placeholder="Ask about this page…"
+              required
+            />
+            <button id="chat-send" class="btn btn-primary" type="submit">
+              Send
+            </button>
+          </form>
         </section>
 
         <section
@@ -189,13 +213,13 @@
 
       <footer class="app-footer">
         <p class="placeholder">
-          Approvals, safety controls, and chat wiring are added in later slices.
+          Approvals and other browser actions are added in later slices.
         </p>
       </footer>
     </main>
 
     <!--
-      Load order matters (Slice 1.1.4, extended in Slices 1.2.2–1.7.1):
+      Load order matters (Slice 1.1.4, extended in Slices 1.2.2–2.1.1):
         1. ../shared/message-contract.js  exposes SahayakMessageContract
                                            (must load before messaging.js and
                                            before any content-script twin).
@@ -217,10 +241,12 @@
        13. ui/language-toggle.js          exposes SahayakLanguage (1.7.1; after
                                            storage-manager + preferences)
        14. prompts/article-summary.js     exposes SahayakArticleSummary (1.5.1)
-       15. features/*.js                  self-initialising cards; summarise
+       15. features/explain.js            shared Gemini request implementation
+       16. features/extract.js             shared Readability injection list
+       17. prompts/page-chat.js            page-chat prompt + fixed refusal
+       18. features/*.js                  self-initialising cards; chat,
                                            and youtube resolve SahayakExplain's
-                                           provider call at click time, so they
-                                           load after explain.js
+                                           provider call at click time
     -->
     <script src="../shared/message-contract.js"></script>
     <script src="../shared/youtube-url.js"></script>
@@ -238,6 +264,10 @@
     <script src="prompts/article-summary.js"></script>
     <script src="features/explain.js"></script>
     <script src="features/extract.js"></script>
+    
+    <script src="../state/session-store.js"></script>
+    <script src="prompts/page-chat.js"></script>
+    <script src="features/chat.js"></script>
     <script src="features/summarise.js"></script>
     <script src="features/youtube.js"></script>
   </body>

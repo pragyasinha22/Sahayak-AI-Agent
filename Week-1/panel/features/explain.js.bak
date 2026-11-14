@@ -1,0 +1,433 @@
+/**
+ * Sahayak — Selected-text Explain feature (Slice 1.3.1)
+ * -----------------------------------------------------------------------------
+ * PS §2.2 / Plan Slice 1.3.1. This is the Side-Panel half of "select text on a
+ * page -> read the AI explanation inside the panel". It is the FIRST end-to-end
+ * "eyes -> brain" slice and therefore establishes the Gemini-call pattern reused
+ * everywhere later (Arch §5).
+ *
+ * Responsibility split enforced here:
+ *   - ALL AI network calls live in the Side Panel (Arch §2 headline rule). The
+ *     content script (content/selection.js) never sees a key; this file reads
+ *     the key from chrome.storage (via SahayakApiKeys) and calls Gemini itself.
+ *   - GDR-3 / INV-2  The key is NEVER logged and NEVER placed in the prompt, the
+ *     result text, or any message. It is sent only as the x-goog-api-key header.
+ *   - Safety invariant (Arch §6.1): the read gate (SahayakPanel.guardRead, the
+ *     Slice 1.2.2 wiring) runs on the target tab's URL BEFORE any text leaves
+ *     the browser. A block/unknown page is refused with its reason. No browser
+ *     action is performed at all in this slice, so no approval path is needed.
+ *
+ * Chrome access (chrome.runtime.onMessage, DOM, fetch) is confined to the
+ * browser-only wiring at the bottom. The exported helpers above are pure and
+ * fully Node-testable (see tests/unit/selection-explain.test.js):
+ *   - buildExplainPrompt(text)      -> plain-text-only prompt (no page HTML)
+ *   - parseGeminiResponse(data)     -> text | ''
+ *   - explainSelection(opts)        -> injectable { key, prompt, fetchImpl }
+ *
+ * Sources:
+ *   - docs/problemStatement.md §2.2
+ *   - docs/architecture.md     §5 (provider), §6.1 (gate placement), §3.1 (panel owns keys)
+ *   - docs/implementation-plan.md Slice 1.3.1 (Objective/Steps/Acceptance/Unit tests)
+ *   - docs/edge-case.md         EC-W1-07 (missing key), EC-W1-08 (auth),
+ *                               EC-W1-11 (oversized selection), EC-W1-10 (network),
+ *                               EC-W2-11 (sensitive page block)
+ * -----------------------------------------------------------------------------
+ */
+'use strict';
+
+(function (global) {
+  // --------------------------------------------------------------------------
+  // Constants. MAX_SELECTION_CHARS mirrors content/selection.js; the panel
+  // re-clamps defensively so a hand-crafted message cannot smuggle an oversized
+  // payload into the provider call (EC-W1-11 / INV-5).
+  // --------------------------------------------------------------------------
+  var MAX_SELECTION_CHARS = 2000;
+  var SELECTION_MESSAGE_TYPE = 'sahayak:selection';
+
+  // Gemini primary, lightweight tier by default (Arch §5.2). The model name and
+  // endpoint are the only vendor-specific values; both are overridable via
+  // explainSelection({ model, endpoint }) so the provider pattern stays testable
+  // and swappable without editing call sites.
+  var GEMINI_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+  var GEMINI_MODEL = 'gemini-3.8-flash';
+
+  // Stable, understandable user-facing messages (EC-W1-07/08/10). Never contain
+  // the key or raw payload (INV-9).
+  var MISSING_KEY_MESSAGE =
+    'Sahayak needs a Gemini API key to explain text. Add it in Settings — it is ' +
+    'stored only on this device.';
+  var EMPTY_SELECTION_MESSAGE =
+    'Select some text on the page first, then press Explain.';
+  var GATE_UNAVAILABLE_MESSAGE =
+    'Sahayak\u2019s messaging channel is unavailable right now. Reopen the panel ' +
+    'and try again.';
+  var AUTH_MESSAGE =
+    'Gemini rejected your API key. Please check it in Settings \u2014 Sahayak ' +
+    'stores it only on this device.';
+  var RATE_MESSAGE =
+    'Gemini is rate-limited right now. Please try again in a moment.';
+  var NETWORK_MESSAGE =
+    'Sahayak couldn\u2019t reach Gemini. Check your connection and try again.';
+  var EMPTY_RESULT_MESSAGE =
+    'Gemini returned no explanation. Please select clearer text and try again.';
+
+  // --------------------------------------------------------------------------
+  // Pure helpers (Node-testable).
+  // --------------------------------------------------------------------------
+
+  /**
+   * Builds the "explain this text" prompt from the PLAIN-TEXT selection only.
+   * window.getSelection().toString() yields rendered text with no markup, and
+   * this template adds none of its own, so the result never contains page HTML
+   * (Plan Unit-test: "prompt template contains no page HTML").
+   *
+   * Slice 1.7.1: `language` ('en' | 'hinglish') injects the response-language
+   * token. The instruction text has ONE source of truth —
+   * state/preferences.js languageInstruction — so explain, summary and
+   * YouTube prompts can never drift apart. Omitted/unknown -> English (the
+   * safe default; keeps every pre-1.7.1 call site and test valid).
+   */
+  function buildExplainPrompt(text, language) {
+    var safe = (typeof text === 'string') ? text : '';
+    return 'Explain the following selected text in clear, simple language. ' +
+      'Use only the text provided here; do not invent facts beyond it.\n' +
+      languageLine(language) + '\n\n' +
+      'SELECTED TEXT:\n"""\n' + safe + '\n"""';
+  }
+
+  function languageLine(language) {
+    var prefs = global.SahayakPreferences;
+    if (prefs && typeof prefs.languageInstruction === 'function') {
+      return prefs.languageInstruction(language);
+    }
+    return 'Reply in clear, simple English.';
+  }
+
+  /**
+   * Extracts the answer text from a Gemini generateContent response body.
+   * Defensive: any missing/odd shape returns '' so callers surface a graceful
+   * "no explanation" rather than throwing (Arch §5.3).
+   */
+  function parseGeminiResponse(data) {
+    if (!data || typeof data !== 'object') return '';
+    var candidates = data.candidates;
+    if (!Array.isArray(candidates) || candidates.length === 0) return '';
+    var content = candidates[0] && candidates[0].content;
+    var parts = content && content.parts;
+    if (!Array.isArray(parts)) return '';
+    var out = '';
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (p && typeof p.text === 'string') out += p.text;
+    }
+    return out;
+  }
+
+  /**
+   * The Slice 1.3.1 Gemini-call pattern. `deps` are injectable so this runs in
+   * Node without a real network:
+   *   explainSelection({ key, prompt, fetchImpl?, model?, endpoint? })
+   * Returns a Promise<{ ok, text? , error?, message? }>. Never logs or returns
+   * the key. Never fires fetch when the key is missing (EC-W1-07).
+   */
+  function explainSelection(opts) {
+    var o = opts || {};
+    var key = (typeof o.key === 'string') ? o.key.trim() : '';
+    var prompt = (typeof o.prompt === 'string') ? o.prompt : '';
+    var fetchImpl = o.fetchImpl ||
+      ((typeof global.fetch === 'function') ? global.fetch.bind(global) : null);
+    var model = o.model || GEMINI_MODEL;
+    var base = o.endpoint || GEMINI_ENDPOINT_BASE;
+
+    if (!key) {
+      return Promise.resolve({ ok: false, error: 'missing-key', message: MISSING_KEY_MESSAGE });
+    }
+    if (!fetchImpl) {
+      return Promise.resolve({ ok: false, error: 'no-network', message: NETWORK_MESSAGE });
+    }
+
+    var body;
+    try {
+      body = JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }]
+      });
+    } catch (_) {
+      return Promise.resolve({ ok: false, error: 'encode', message: NETWORK_MESSAGE });
+    }
+
+    var url = base + '/' + model + ':generateContent';
+
+    return Promise.resolve()
+      .then(function () {
+        return fetchImpl(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': key // key travels ONLY as this header, never logged
+          },
+          body: body
+        });
+      })
+      .then(function (resp) {
+        if (!resp || typeof resp.status !== 'number') {
+          var bad = new Error('bad-response'); bad.kind = 'bad-response'; throw bad;
+        }
+        if (resp.status === 401 || resp.status === 403) {
+          var auth = new Error('auth'); auth.kind = 'auth'; throw auth;
+        }
+        if (resp.status === 429) {
+          var rate = new Error('rate-limit'); rate.kind = 'rate-limit'; throw rate;
+        }
+        if (resp.ok === false) {
+          var http = new Error('http'); http.kind = 'http'; throw http;
+        }
+        if (typeof resp.json !== 'function') {
+          var nojson = new Error('bad-response'); nojson.kind = 'bad-response'; throw nojson;
+        }
+        return resp.json();
+      })
+      .then(function (data) {
+        var text = parseGeminiResponse(data);
+        if (!text) {
+          return { ok: false, error: 'empty', message: EMPTY_RESULT_MESSAGE };
+        }
+        return { ok: true, text: text };
+      })
+      .catch(function (err) {
+        var kind = (err && err.kind) ? err.kind : 'network';
+        if (kind === 'auth') return { ok: false, error: 'auth', message: AUTH_MESSAGE };
+        if (kind === 'rate-limit') return { ok: false, error: 'rate-limit', message: RATE_MESSAGE };
+        return { ok: false, error: 'network', message: NETWORK_MESSAGE };
+      });
+  }
+
+  // --------------------------------------------------------------------------
+  // Slice 1.3.1 completeness fix — selection capture on ANY page without new
+  // host permissions. The declarative content script only runs on the
+  // manifest-matched demo site; everywhere else the user reaches Explain
+  // through this on-demand arm path, which reuses the sanctioned Slice 1.4.1
+  // pattern: gate FIRST, then chrome.scripting injection under the existing
+  // activeTab grant (toolbar click) — no broad hosts added to the manifest.
+  // Pure orchestrator (injectable deps) so Node tests can pin the order.
+  // --------------------------------------------------------------------------
+  var SELECTION_ARM_FILES = ['content/selection.js'];
+  var ARM_OK_MESSAGE =
+    'Sahayak is now listening for your selection. Select any text on the ' +
+    'page, then press Explain again.';
+
+  function armSelectionCapture(deps) {
+    var d = deps || {};
+    var panel = d.panel;
+    var scripting = d.scripting;
+    var render = (typeof d.render === 'function') ? d.render : function () {};
+
+    var havePanel = panel &&
+      typeof panel.requestActiveTabId === 'function' &&
+      typeof panel.requestPageInfo === 'function' &&
+      typeof panel.guardRead === 'function';
+    var haveScripting = scripting && typeof scripting.executeScript === 'function';
+    if (!havePanel || !haveScripting) {
+      render({ state: 'unavailable', message: GATE_UNAVAILABLE_MESSAGE });
+      return Promise.resolve();
+    }
+
+    render({ state: 'checking' });
+    return Promise.resolve()
+      .then(function () { return panel.requestActiveTabId(); })
+      .then(function (tid) {
+        return panel.requestPageInfo(tid).then(function (pi) {
+          return panel.guardRead(pi).then(function (dec) {
+            return { tid: tid, dec: dec };
+          });
+        });
+      })
+      .then(function (step) {
+        if (!step.dec || !step.dec.allowed) {
+          var reason = (step.dec && step.dec.reason) ? step.dec.reason : 'blocked';
+          // STOP before injecting: sensitive/private pages get nothing at all.
+          render({
+            state: 'blocked',
+            message: 'Blocked by safety (' + reason +
+              '). Sahayak will not read or explain this page.'
+          });
+          return;
+        }
+        // activeTab (granted by the toolbar click that opened the panel)
+        // authorises this on-demand injection; no host permissions needed.
+        return scripting.executeScript({
+          target: { tabId: step.tid, allFrames: false },
+          files: SELECTION_ARM_FILES
+        }).then(function () {
+          render({ state: 'armed', message: ARM_OK_MESSAGE });
+        });
+      })
+      .catch(function () {
+        // Reserved-page rejection (chrome://...) or lost tab.
+        render({ state: 'disallowed', message: EMPTY_SELECTION_MESSAGE });
+      });
+  }
+
+  // --------------------------------------------------------------------------
+  // Browser-only wiring: Explain card + inbound selection listener.
+  // Self-initialising so no completed slice (side-panel.js) must be edited.
+  // --------------------------------------------------------------------------
+  function initUI(win) {
+    if (typeof win === 'undefined' || !win.document) return;
+
+    var doc = win.document;
+
+    function whenReady(fn) {
+      if (doc.readyState === 'loading') {
+        doc.addEventListener('DOMContentLoaded', fn);
+      } else {
+        fn();
+      }
+    }
+
+    whenReady(function () {
+      var btn = doc.getElementById('explain-btn');
+      var outputEl = doc.getElementById('explain-output');
+      var previewEl = doc.getElementById('explain-selection');
+      if (!btn || !outputEl) return; // card absent -> nothing to wire
+
+      var last = { text: '', truncated: false, tabId: null };
+
+      function render(text, cls) {
+        outputEl.textContent = text;
+        outputEl.className = 'explain-output' + (cls ? ' ' + cls : '');
+      }
+
+      // Inbound selection pushes from content/selection.js.
+      if (win.chrome && win.chrome.runtime && win.chrome.runtime.onMessage) {
+        win.chrome.runtime.onMessage.addListener(function (message, sender) {
+          if (!message || message.type !== SELECTION_MESSAGE_TYPE) return;
+          var clamped = (typeof message.text === 'string') ? message.text.slice(0, MAX_SELECTION_CHARS) : '';
+          last.text = clamped;
+          last.truncated = !!message.truncated ||
+            (typeof message.text === 'string' && message.text.length > MAX_SELECTION_CHARS);
+          last.tabId = (sender && sender.tab && typeof sender.tab.id === 'number')
+            ? sender.tab.id : null;
+          if (previewEl) {
+            previewEl.textContent = last.text
+              ? ('\u201C' + last.text + (last.truncated ? '\u2026\u201D' : '\u201D'))
+              : '';
+          }
+        });
+      }
+
+      btn.addEventListener('click', function () {
+        if (!last.text) {
+          // No selection buffered: this is either a plain "select first" hint
+          // or an un-armed page. Arm capture on demand (gate-checked inside),
+          // so Explain works on every page without broad host permissions.
+          armSelectionCapture({
+            panel: win.SahayakPanel,
+            scripting: win.chrome && win.chrome.scripting,
+            render: function (st) {
+              if (!st) return;
+              render(st.message || EMPTY_SELECTION_MESSAGE,
+                st.state === 'blocked' || st.state === 'unavailable' || st.state === 'disallowed'
+                  ? 'is-err' : 'is-warn');
+            }
+          });
+          return;
+        }
+        var api = win.SahayakPanel;
+        if (!api || typeof api.requestPageInfo !== 'function' ||
+            typeof api.guardRead !== 'function') {
+          render(GATE_UNAVAILABLE_MESSAGE, 'is-err');
+          return;
+        }
+
+        render('Checking this page is safe to read\u2026', 'is-warn');
+
+        // 1) resolve the source tab, 2) read its URL, 3) run the read gate
+        //    BEFORE any egress (Arch §6.1). Reuse the Slice 1.2.2 gate.
+        var tabReady = (typeof last.tabId === 'number')
+          ? Promise.resolve(last.tabId)
+          : api.requestActiveTabId();
+
+        tabReady
+          .then(function (tid) { return api.requestPageInfo(tid); })
+          .then(function (pageInfo) { return api.guardRead(pageInfo); })
+          .then(function (decision) {
+            if (!decision || !decision.allowed) {
+              var reason = (decision && decision.reason) ? decision.reason : 'blocked';
+              render('Blocked by safety (' + reason +
+                '). Sahayak will not read or explain this page.', 'is-err');
+              return null; // stop; handled
+            }
+
+            // 2) read the key from storage (never to a content script), 3) call
+            //    Gemini, 4) render.
+            var storageManager = win.SahayakStorageManager;
+            var apiKeys = win.SahayakApiKeys;
+            if (!storageManager || !apiKeys) {
+              render(MISSING_KEY_MESSAGE, 'is-err');
+              return null;
+            }
+            return Promise.resolve(apiKeys.getGeminiKey(storageManager));
+          })
+          .then(function (key) {
+            if (key === null) return; // safety-blocked / already rendered
+            if (!key) { render(MISSING_KEY_MESSAGE, 'is-err'); return; }
+
+            render('Explaining\u2026', 'is-warn');
+            return explainSelection({
+              key: key,
+              // Slice 1.7.1 — the panel's cached language feeds the prompt.
+              prompt: buildExplainPrompt(
+                last.text,
+                (win.SahayakLanguage && win.SahayakLanguage.current()) || 'en'
+              )
+            }).then(function (res) {
+              if (res.ok) {
+                var note = last.truncated
+                  ? '\n\n(Selection was too large; Sahayak used the first part.)'
+                  : '';
+                render(res.text + note, 'is-ok');
+              } else {
+                render(res.message, 'is-err');
+              }
+            });
+          })
+          .catch(function () {
+            render(NETWORK_MESSAGE, 'is-err');
+          });
+      });
+    });
+  }
+
+  var api = {
+    MAX_SELECTION_CHARS: MAX_SELECTION_CHARS,
+    SELECTION_MESSAGE_TYPE: SELECTION_MESSAGE_TYPE,
+    GEMINI_MODEL: GEMINI_MODEL,
+    GEMINI_ENDPOINT_BASE: GEMINI_ENDPOINT_BASE,
+    MISSING_KEY_MESSAGE: MISSING_KEY_MESSAGE,
+    EMPTY_SELECTION_MESSAGE: EMPTY_SELECTION_MESSAGE,
+    AUTH_MESSAGE: AUTH_MESSAGE,
+    RATE_MESSAGE: RATE_MESSAGE,
+    NETWORK_MESSAGE: NETWORK_MESSAGE,
+    EMPTY_RESULT_MESSAGE: EMPTY_RESULT_MESSAGE,
+    buildExplainPrompt: buildExplainPrompt,
+    parseGeminiResponse: parseGeminiResponse,
+    explainSelection: explainSelection,
+    SELECTION_ARM_FILES: SELECTION_ARM_FILES,
+    ARM_OK_MESSAGE: ARM_OK_MESSAGE,
+    armSelectionCapture: armSelectionCapture,
+    initUI: initUI
+  };
+
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    global.SahayakExplain = api;
+    initUI(global);
+  }
+})(
+  typeof globalThis !== 'undefined'
+    ? globalThis
+    : typeof self !== 'undefined'
+    ? self
+    : window
+);

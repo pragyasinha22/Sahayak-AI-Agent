@@ -498,6 +498,135 @@ async function main() {
       global.fetch = originalFetch;
     }
   }
+  
+  // ==========================================================================
+  // Slice 2.1.3 — Gemini streaming provider
+  // ==========================================================================
+  section('streamExplainSelection — streaming response');
+
+  {
+    const KEY = 'AIzaSTREAMfake1234567890';
+    const encoder = new TextEncoder();
+
+    const events = [
+      'data: ' + JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'Hello ' }] } }]
+      }) + '\n\n',
+      'data: ' + JSON.stringify({
+        candidates: [{ content: { parts: [{ text: 'world!' }] } }]
+      }) + '\n\n'
+    ];
+
+    const bytes = encoder.encode(events.join(''));
+    const chunks = [
+      bytes.slice(0, 35),
+      bytes.slice(35)
+    ];
+
+    let readIndex = 0;
+    let requestUrl = '';
+    let requestOptions = '';
+    const received = [];
+
+    const result = await Explain.streamExplainSelection({
+      key: KEY,
+      prompt: 'Test streaming prompt',
+      fetchImpl: async (url, options) => {
+        requestUrl = url;
+        requestOptions = options;
+
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            getReader: () => ({
+              read: async () => {
+                if (readIndex >= chunks.length) {
+                  return { done: true };
+                }
+
+                return {
+                  done: false,
+                  value: chunks[readIndex++]
+                };
+              }
+            })
+          }
+        };
+      },
+      onChunk: (chunk) => received.push(chunk)
+    });
+
+    assert(result.ok === true, 'streaming request succeeds');
+    assert(result.text === 'Hello world!', 'streamed chunks form the complete response');
+    assert(received.join('') === 'Hello world!', 'onChunk receives generated text');
+    assert(received.length === 2, 'two SSE events produce two callbacks');
+    assert(
+      requestUrl.indexOf(':streamGenerateContent?alt=sse') !== -1,
+      'uses Gemini SSE streaming endpoint'
+    );
+    assert(
+      requestOptions.headers['x-goog-api-key'] === KEY,
+      'API key is sent in request header'
+    );
+    assert(
+      !requestOptions.body.includes(KEY) && !requestUrl.includes(KEY),
+      'API key is absent from request body and URL'
+    );
+    assert(
+      requestOptions.body.includes('Test streaming prompt'),
+      'request body contains the prompt'
+    );
+    assert(
+      !JSON.stringify(result).includes(KEY),
+      'API key never appears in returned result'
+    );
+  }
+
+  section('streamExplainSelection — error handling');
+
+  {
+    let fetchCalls = 0;
+
+    const missingKey = await Explain.streamExplainSelection({
+      key: '',
+      prompt: 'Test',
+      fetchImpl: async () => {
+        fetchCalls++;
+        return {};
+      }
+    });
+
+    assert(missingKey.ok === false, 'missing key returns failure');
+    assert(missingKey.error === 'missing-key', 'missing key has correct error');
+    assert(fetchCalls === 0, 'missing key never triggers a network call');
+
+    const rateLimited = await Explain.streamExplainSelection({
+      key: 'fake-key',
+      prompt: 'Test',
+      fetchImpl: async () => ({
+        ok: false,
+        status: 429
+      })
+    });
+
+    assert(rateLimited.ok === false, '429 returns failure');
+    assert(rateLimited.error === 'rate-limit', '429 maps to rate-limit');
+
+    const serverError = await Explain.streamExplainSelection({
+      key: 'fake-key',
+      prompt: 'Test',
+      fetchImpl: async () => ({
+        ok: false,
+        status: 503
+      })
+    });
+
+    assert(serverError.ok === false, '503 returns failure');
+    assert(serverError.error === 'http', '503 maps to HTTP error');
+    assert(serverError.status === 503, '503 status is preserved');
+  }
+
   // ==========================================================================
   // Summary
   // ==========================================================================

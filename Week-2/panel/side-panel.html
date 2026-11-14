@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sahayak</title>
+    <link rel="stylesheet" href="side-panel.css" />
+  </head>
+  <body>
+    <!--
+      Sahayak Side Panel — Slice 1.1.2 shell + Slice 1.1.3 Settings view +
+      Slice 1.1.4 message router wiring.
+
+      Layout containers per docs/implementation-plan.md Slice 1.1.2 Steps
+      ("header, chat area, review area, footer"), extended in Slice 1.1.3
+      with a Chat/Settings view toggle and a hidden settings section.
+
+        header       -> Slice 1.1.2. Title + status pill + view toggle (1.1.3).
+        chat area    -> Week 2 Slice 2.1.x (page chat + streaming).
+        review area  -> Week 3 Slice 3.4.3 (agent proposal review).
+        settings     -> Slice 1.1.3 (API-key form, masked input, caveat note).
+        footer       -> Placeholder; Week-3 controls arrive here.
+
+      No fetch(), no AI provider calls, no safety calls in this document.
+      The panel's outbound channel to the worker is Slice 1.1.4's
+      messaging.js; it never carries keys (see shared/message-contract.js).
+      See docs/architecture.md §3.1.
+    -->
+    <main id="app" class="app">
+      <header class="app-header">
+        <div class="app-header-title">
+          <h1 class="app-title">Sahayak</h1>
+          <span id="app-status" class="app-status" title="Panel status">Idle</span>
+        </div>
+        <nav
+          id="view-toggle"
+          class="view-toggle"
+          aria-label="Switch between Chat and Settings"
+        >
+          <button
+            class="view-toggle-btn is-active"
+            data-view="chat"
+            type="button"
+            aria-pressed="true"
+          >
+            Chat
+          </button>
+          <button
+            class="view-toggle-btn"
+            data-view="settings"
+            type="button"
+            aria-pressed="false"
+          >
+            Settings
+          </button>
+        </nav>
+      </header>
+
+      <!-- Chat view: in-memory page-grounded conversation (Slice 2.1.1). -->
+      <div id="view-chat" class="view view-chat">
+        <section
+          id="context-action-notice"
+          class="context-action-notice"
+          aria-live="polite"
+          hidden
+        >
+          <div class="context-action-heading">
+            <strong>Requested action</strong>
+            <span id="context-action-name"></span>
+          </div>
+          <p class="context-action-caption">Selected text</p>
+          <div id="context-action-text" class="context-action-text"></div>
+          <div class="context-action-copy-actions">
+            <button id="context-action-copy-selection" class="btn btn-secondary" type="button">
+              Copy selected text
+            </button>
+          </div>
+          <div
+            id="draft-context-picker"
+            class="draft-context-picker"
+            role="group"
+            aria-label="Draft reply context"
+            hidden
+          >
+            <p class="context-action-caption">Choose a reply context</p>
+            <div class="draft-context-buttons">
+              <button class="draft-context-btn" data-draft-context="Email" type="button" aria-pressed="false">Email</button>
+              <button class="draft-context-btn" data-draft-context="LinkedIn" type="button" aria-pressed="false">LinkedIn</button>
+              <button class="draft-context-btn" data-draft-context="Forum" type="button" aria-pressed="false">Forum</button>
+            </div>
+            <label class="context-action-caption" for="draft-project-facts">
+              Optional project facts for this draft
+            </label>
+            <p id="draft-trusted-facts-help" class="draft-trusted-facts-help">
+              Included only in draft prompts; never saved or added to Page Chat. Review or replace these facts for each selected message. The selected comment is not evidence about your project.
+            </p>
+            <textarea
+              id="draft-project-facts"
+              class="draft-project-facts"
+              rows="4"
+              maxlength="2000"
+              aria-describedby="draft-trusted-facts-help"
+              placeholder="Optional: confirmed tools, features, or project details..."
+              wrap="soft"
+            ></textarea>
+          </div>
+          <pre id="context-action-result" class="context-action-result" aria-live="polite"></pre>
+          <div class="context-action-copy-actions">
+            <button id="context-action-copy-result" class="btn btn-secondary" type="button" hidden>
+              Copy result
+            </button>
+          </div>
+          <p id="context-action-copy-status" class="context-action-copy-status" role="status" aria-live="polite"></p>
+        </section>
+        <section
+          id="chat-area"
+          class="chat-area"
+          aria-label="Chat with the current page"
+        >
+          <div
+            id="chat-history"
+            class="chat-history"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+            aria-label="Conversation"
+          >
+            <p class="chat-intro">
+              Ask a question about this page. Answers use only its readable article text.
+            </p>
+          </div>
+          <p id="chat-status" class="chat-status" role="status" hidden></p>
+          <form id="chat-form" class="chat-composer">
+            <label class="sr-only" for="chat-question">Question about this page</label>
+            <input
+              id="chat-question"
+              class="chat-input"
+              type="text"
+              autocomplete="off"
+              placeholder="Ask about this page…"
+              required
+            />
+            <button id="chat-send" class="btn btn-primary" type="submit">
+              Send
+            </button>
+          </form>
+        </section>
+
+        <section
+          id="review-area"
+          class="review-area"
+          aria-label="Agent action review"
+        >
+          <p class="placeholder">
+            Proposed browser actions and approval controls will appear here
+            (Week 3).
+          </p>
+        </section>
+
+        <!-- Explain card: Slice 1.3.1 (PS §2.2). Populated by
+             panel/features/explain.js. Select text on the page, then press
+             Explain; the answer renders below the selection preview. -->
+        <section
+          id="explain-card"
+          class="view-explain"
+          aria-label="Explain selected text"
+        >
+          <p class="explain-hint">
+            Select text on the page, then press Explain.
+          </p>
+          <p id="explain-selection" class="explain-selection placeholder"></p>
+          <div class="field-actions">
+            <button
+              id="explain-btn"
+              class="btn btn-primary"
+              type="button"
+            >
+              Explain
+            </button>
+          </div>
+          <pre id="explain-output" class="explain-output"></pre>
+        </section>
+
+        <!-- Extract card: Slice 1.4.1 (PS §2.3). Populated by
+             panel/features/extract.js. Reads the current article via the
+             read-gate + on-demand Readability injection; result shown as text. -->
+        <section
+          id="extract-card"
+          class="view-extract"
+          aria-label="Extract article"
+        >
+          <p class="extract-hint">
+            Extract the main article text from the current page.
+          </p>
+          <div class="field-actions">
+            <button
+              id="extract-btn"
+              class="btn btn-primary"
+              type="button"
+            >
+              Extract
+            </button>
+          </div>
+          <h3 id="extract-title" class="extract-title" style="display: none"></h3>
+          <pre id="extract-output" class="extract-output"></pre>
+        </section>
+
+        <!-- Summary card: Slice 1.5.1 (PS §2.4). Populated by
+             panel/features/summarise.js + panel/prompts/article-summary.js.
+             Reuses the 1.4.1 extraction, then renders exactly 1 TL;DR line,
+             5 key points and a next-actions list from Gemini. -->
+        <section
+          id="summary-card"
+          class="view-summary"
+          aria-label="Summarise article"
+        >
+          <p class="summary-hint">
+            Get a structured TL;DR, five key points and next actions for the
+            current article.
+          </p>
+          <div class="field-actions">
+            <button
+              id="summarise-btn"
+              class="btn btn-primary"
+              type="button"
+            >
+              Summarise
+            </button>
+          </div>
+          <div id="summary-output" class="summary-output"></div>
+        </section>
+
+        <!-- YouTube card: Slice 1.6.1 (PS §2.5). Populated by
+             panel/features/youtube.js. Reads transcript/timestamps from a
+             public watch page via the on-demand adapter; unavailable videos
+             show a clear "cannot be summarised" message. -->
+        <section
+          id="youtube-card"
+          class="view-youtube"
+          aria-label="Summarise YouTube video"
+        >
+          <p class="youtube-hint">
+            Summarise the public YouTube video open in this tab with
+            timestamped chapter notes.
+          </p>
+          <div class="field-actions">
+            <button
+              id="youtube-btn"
+              class="btn btn-primary"
+              type="button"
+            >
+              Summarise video
+            </button>
+          </div>
+          <h3 id="youtube-title" class="youtube-title" style="display: none"></h3>
+          <pre id="youtube-output" class="youtube-output"></pre>
+        </section>
+      </div>
+
+      <!-- Settings view: Slice 1.1.3. Populated by settings/settings.js. -->
+      <section
+        id="settings-view"
+        class="view view-settings"
+        aria-label="Settings"
+        hidden
+      ></section>
+
+      <footer class="app-footer">
+        <p class="placeholder">
+          Approvals and other browser actions are added in later slices.
+        </p>
+      </footer>
+    </main>
+
+    <!--
+      Load order matters (Slice 1.1.4, extended in Slices 1.2.2–2.1.1):
+        1. ../shared/message-contract.js  exposes SahayakMessageContract
+                                           (must load before messaging.js and
+                                           before any content-script twin).
+        2. ../shared/youtube-url.js       exposes SahayakYouTubeUrl (pure;
+                                           shared with content/youtube-adapter.js)
+        3. ../state/storage-manager.js    exposes SahayakStorageManager
+        4. ../state/api-keys.js           exposes SahayakApiKeys
+        5. ../state/preferences.js        exposes SahayakPreferences (1.7.1;
+                                           must load before language-toggle and
+                                           before every prompt builder, which
+                                           read the language token from it)
+        6. settings/settings.js           exposes SahayakSettingsController
+        7. ../safety/rules.js             exposes SahayakSafetyRules
+        8. ../safety/classifiers.js       exposes SahayakSafetyClassifiers
+        9. ../safety/policy.js            exposes SahayakSafetyPolicy
+       10. safety-gate.js                 exposes SahayakSafetyGate.makeGate
+       11. messaging.js                   exposes SahayakPanelMessaging.install
+       12. side-panel.js                  bootstraps views + settings + router
+       13. ui/language-toggle.js          exposes SahayakLanguage (1.7.1; after
+                                           storage-manager + preferences)
+       14. prompts/article-summary.js     exposes SahayakArticleSummary (1.5.1)
+       15. features/explain.js            shared Gemini request implementation
+       16. features/extract.js             shared Readability injection list
+       17. prompts/page-chat.js            page-chat prompt + fixed refusal
+       18. prompts/translate.js + prompts/draft.js build context-action prompts
+       19. features/context-actions.js    translates/drafts after the read gate
+       20. features/*.js                  self-initialising cards; chat,
+                                           and youtube resolve SahayakExplain's
+                                           provider call at click time
+    -->
+    <script src="../shared/message-contract.js"></script>
+    <script src="../shared/context-action.js"></script>
+    <script src="../shared/youtube-url.js"></script>
+    <script src="../state/storage-manager.js"></script>
+    <script src="../state/api-keys.js"></script>
+    <script src="../state/preferences.js"></script>
+    <script src="settings/settings.js"></script>
+    <script src="../safety/rules.js"></script>
+    <script src="../safety/classifiers.js"></script>
+    <script src="../safety/policy.js"></script>
+    <script src="safety-gate.js"></script>
+    <script src="messaging.js"></script>
+    <script src="side-panel.js"></script>
+    <script src="ui/language-toggle.js"></script>
+    <script src="prompts/article-summary.js"></script>
+    <script src="prompts/translate.js"></script>
+    <script src="prompts/draft.js"></script>
+    <script src="features/explain.js"></script>
+    <script src="features/extract.js"></script>
+    <script src="prompts/page-chat.js"></script>
+    <script src="../state/session-store.js"></script>
+    <script src="features/chat.js"></script>
+    <script src="features/context-actions.js"></script>
+    <script src="features/context-menu.js"></script>
+    <script src="features/summarise.js"></script>
+    <script src="features/youtube.js"></script>
+  </body>
+</html>

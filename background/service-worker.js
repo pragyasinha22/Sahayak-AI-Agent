@@ -39,6 +39,7 @@
 //   ./router.js                   -> SahayakRouter.makeHandler factory
 importScripts('../shared/message-contract.js');
 importScripts('router.js');
+importScripts('../state/session-store.js');
 
 /**
  * Single log line used to satisfy the Slice 1.1.1 acceptance criterion:
@@ -77,6 +78,17 @@ chrome.runtime.onInstalled.addListener((details) => {
  * (approval and task progress persistence is Slice 3.4.5 territory).
  */
 logRegistration('startup');
+// Slice 2.1.2 — Clear conversation history when its tab closes.
+const sessionStore = SahayakSessionStore.create(chrome.storage.session);
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  sessionStore.clearTab(tabId).catch((error) => {
+    console.error(
+      '[Sahayak] Could not clear closed-tab history:',
+      error
+    );
+  });
+});
 
 // -----------------------------------------------------------------------------
 // Slice 1.1.2 — Side Panel shell + panel-open binding (FR-1, Arch §3.1).

@@ -6,7 +6,7 @@ Sahayak reads the page you are viewing, explains selections, summarises articles
 
 ---
 
-## Current status — Week 1 complete in code
+## Current status — Week 1 and Slice 2.1.1 complete in code
 
 This repository is being built slice-by-slice according to
 [`docs/implementation-plan.md`](./docs/implementation-plan.md).
@@ -24,8 +24,9 @@ This repository is being built slice-by-slice according to
 | **1.5.1** | Structured article summary (TL;DR · 5 key points · next actions) | ✅ Implemented · 30 unit assertions |
 | **1.6.1** | YouTube summarisation (transcript/timestamp chapter notes) | ✅ Implemented · 38 unit assertions |
 | **1.7.1** | English / Hinglish response-language toggle | ✅ Implemented · 27 unit assertions |
+| **2.1.1** | Strictly page-grounded chat (in-memory panel history) | ✅ Implemented · unit tested |
 | **1.8.1** | Chrome built-in AI probe (assignment: **optional**) | ⏳ Not started — non-blocking by design |
-| … | Later weeks (chat, context menus, screenshots, agent, profile, skills, distribution) | ⏳ Not started |
+| … | Later slices (chat persistence/streaming, context menus, screenshots, agent, profile, skills, distribution) | ⏳ Not started |
 
 Manual Chrome acceptance for Slices 1.3.1–1.7.1 is pending on the user's side
 (see *Week-1 manual acceptance* below); unit-test evidence is all green
@@ -94,10 +95,12 @@ in dev/unpacked builds.
 │   ├── settings/settings.js      # API-key form (masked UI + caveat)
 │   ├── ui/language-toggle.js     # EN | Hinglish header pill (1.7.1)
 │   ├── prompts/
-│   │   └── article-summary.js    # Summary prompt + 3-section parser (1.5.1)
+│   │   ├── article-summary.js    # Summary prompt + 3-section parser (1.5.1)
+│   │   └── page-chat.js          # Strict page grounding + fixed refusal (2.1.1)
 │   └── features/
 │       ├── explain.js            # Selection → Gemini explain (1.3.1) + arm path
 │       ├── extract.js            # Gate → inject → guardedSend (1.4.1)
+│       ├── chat.js               # Page-grounded chat; panel-memory only (2.1.1)
 │       ├── summarise.js          # Extract + Gemini summary + section render (1.5.1)
 │       └── youtube.js            # YouTube gate → adapter → chapter notes (1.6.1)
 ├── content/
@@ -129,7 +132,8 @@ in dev/unpacked builds.
 │       ├── readability-integrity.test.js # 13 (1.4.1 provenance + real engine)
 │       ├── summarise.test.js         #  30 (1.5.1)
 │       ├── youtube.test.js           #  38 (1.6.1)
-│       └── preferences.test.js       #  27 (1.7.1)
+│       ├── preferences.test.js       #  27 (1.7.1)
+│       └── page-chat.test.js         # Page-chat prompt + orchestration (2.1.1)
 └── docs/
     ├── problemStatement.md · architecture.md · implementation-plan.md
     ├── edge-case.md · prompts.md
@@ -280,8 +284,8 @@ Referenced from `docs/implementation-plan.md` §0:
 - **GDR-3** AI calls in the Side Panel; keys never reach content scripts. Enforced at the router boundary (`shared/message-contract.js` recursive forbidden-field walk) and in every feature test.
 - **GDR-6** Fixed message-contract families — YouTube reuses `extract-article` with a `kind` marker instead of adding a family.
 - **GDR-7** Raw page HTML never leaves a page; adapters return whitelisted plain text.
-- **GDR-9** No future-week features leaked into Week 1: no chat, no orchestrator, no provider abstraction beyond the single documented Gemini call pattern.
+- **GDR-9** No later-slice features are included: chat is page-grounded and non-streaming; no conversation persistence, context menus, screenshots, agent, or provider abstraction.
 
 ---
 
-*End of Week 1. Await approval before starting Week 2 (page chat, context menus, screenshots).*
+*Slice 2.1.1 is implemented. Await approval before starting Slice 2.1.2 or any later slice.*

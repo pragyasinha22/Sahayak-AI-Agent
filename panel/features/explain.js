@@ -288,7 +288,140 @@
         return { ok: false, error: 'network', message: NETWORK_MESSAGE };
       });
   }
+  // -----------------------------------------------------------------------
+    /**
+   * Slice 2.1.3 — Gemini streaming response.
+   * Reads SSE events and sends each generated text delta to onChunk.
+   * Keeps the API key in the request header only.
+   */
+  async function streamExplainSelection(opts) {
+    var o = opts || {};
+    var key = (typeof o.key === 'string') ? o.key.trim() : '';
+    var prompt = (typeof o.prompt === 'string') ? o.prompt : '';
+    var fetchImpl = o.fetchImpl ||
+      ((typeof global.fetch === 'function') ? global.fetch.bind(global) : null);
+    var onChunk = (typeof o.onChunk === 'function') ? o.onChunk : function () {};
+    var Decoder = o.TextDecoderImpl ||
+      (typeof global.TextDecoder === 'function' ? global.TextDecoder : null);
+    var model = o.model || GEMINI_MODEL;
+    var endpoint = o.endpoint || GEMINI_ENDPOINT_BASE;
 
+    if (!key) {
+      return {
+        ok: false,
+        error: 'missing-key',
+        message: 'Add your Gemini API key in Settings before asking Sahayak.'
+      };
+    }
+    if (!prompt.trim() || typeof fetchImpl !== 'function' || !Decoder) {
+      return { ok: false, error: 'network', message: NETWORK_MESSAGE };
+    }
+
+    var url = endpoint.replace(/\/$/, '') + '/' + model +
+      ':streamGenerateContent?alt=sse';
+
+    try {
+      var resp = await fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': key
+        },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }]
+        })
+      });
+
+      if (!resp || !resp.ok) {
+        var status = resp ? resp.status : 0;
+
+        if (status === 401 || status === 403) {
+          return { ok: false, error: 'auth', message: AUTH_MESSAGE };
+        }
+        if (status === 429) {
+          return { ok: false, error: 'rate-limit', message: RATE_MESSAGE };
+        }
+
+        return {
+          ok: false,
+          error: 'http',
+          status: status,
+          message: 'Gemini returned HTTP ' + status + '.'
+        };
+      }
+
+      if (!resp.body || typeof resp.body.getReader !== 'function') {
+        return { ok: false, error: 'network', message: NETWORK_MESSAGE };
+      }
+
+      var reader = resp.body.getReader();
+      var decoder = new Decoder();
+      var buffer = '';
+      var fullText = '';
+
+      function processLine(line) {
+        var trimmed = line.trim();
+        if (!trimmed || trimmed.indexOf('data:') !== 0) return;
+
+        var payload = trimmed.slice(5).trim();
+        if (!payload || payload === '[DONE]') return;
+
+        var data;
+        try {
+          data = JSON.parse(payload);
+        } catch (_) {
+          return;
+        }
+
+        var delta = parseGeminiResponse(data);
+        if (delta) {
+          fullText += delta;
+          onChunk(delta);
+        }
+      }
+
+      while (true) {
+        var result = await reader.read();
+        if (result.done) break;
+
+        buffer += decoder.decode(result.value, { stream: true });
+        var lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || '';
+
+        for (var i = 0; i < lines.length; i++) {
+          processLine(lines[i]);
+        }
+      }
+
+      buffer += decoder.decode();
+      if (buffer) processLine(buffer);
+
+      if (!fullText) {
+        return { ok: false, error: 'empty', message: EMPTY_RESULT_MESSAGE };
+      }
+
+      return { ok: true, text: fullText };
+    } catch (err) {
+      var kind = (err && err.kind) ? err.kind : 'network';
+
+      if (kind === 'auth') {
+        return { ok: false, error: 'auth', message: AUTH_MESSAGE };
+      }
+      if (kind === 'rate-limit') {
+        return { ok: false, error: 'rate-limit', message: RATE_MESSAGE };
+      }
+      if (kind === 'http') {
+        return {
+          ok: false,
+          error: 'http',
+          status: err.status,
+          message: 'Gemini returned HTTP ' + err.status + '.'
+        };
+      }
+
+      return { ok: false, error: 'network', message: NETWORK_MESSAGE };
+    }
+  }
   // --------------------------------------------------------------------------
   // Slice 1.3.1 completeness fix — selection capture on ANY page without new
   // host permissions. The declarative content script only runs on the
@@ -525,6 +658,7 @@
     buildExplainPrompt: buildExplainPrompt,
     parseGeminiResponse: parseGeminiResponse,
     explainSelection: explainSelection,
+    streamExplainSelection: streamExplainSelection,
     SELECTION_ARM_FILES: SELECTION_ARM_FILES,
     ARM_OK_MESSAGE: ARM_OK_MESSAGE,
     armSelectionCapture: armSelectionCapture,
