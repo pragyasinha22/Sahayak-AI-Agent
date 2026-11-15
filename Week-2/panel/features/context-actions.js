@@ -14,6 +14,24 @@
   var PROVIDER_ERROR_MESSAGE =
     'Sahayak could not generate a response. Please try again.';
 
+  function toUserMessage(error, fallback) {
+    var errors = global.SahayakErrors;
+    return errors && typeof errors.toUserMessage === 'function'
+      ? errors.toUserMessage(error, fallback)
+      : (fallback || PROVIDER_ERROR_MESSAGE);
+  }
+
+  function safeErrorDetails(error) {
+    var source = error && typeof error === 'object' ? error : {};
+    return {
+      error: typeof source.error === 'string' ? source.error : '',
+      code: typeof source.code === 'string' ? source.code : '',
+      kind: typeof source.kind === 'string' ? source.kind : '',
+      name: typeof source.name === 'string' ? source.name : '',
+      status: Number.isFinite(source.status) ? source.status : null
+    };
+  }
+
   function traceSelection(stage, text) {
     var contract = global.SahayakContextAction;
     if (contract && typeof contract.traceSelection === 'function') {
@@ -82,6 +100,7 @@
     if (!classifier || typeof classifier.classifyText !== 'function') {
       render({
         state: 'error',
+        error: 'safety-blocked',
         message: 'Blocked by safety: the selected-text safety check is unavailable.'
       });
       return Promise.resolve();
@@ -90,6 +109,7 @@
     if (!textDecision || textDecision.class !== 'ordinary') {
       render({
         state: 'error',
+        error: 'safety-blocked',
         message: 'Blocked by safety: the selection may contain credentials.'
       });
       return Promise.resolve();
@@ -99,6 +119,7 @@
       if (!factsDecision || factsDecision.class !== 'ordinary') {
         render({
           state: 'error',
+          error: 'safety-blocked',
           message: 'Blocked by safety: the supplied project facts may contain credentials.'
         });
         return Promise.resolve();
@@ -110,7 +131,11 @@
         typeof panel.guardRead !== 'function' ||
         typeof d.getKey !== 'function' ||
         typeof d.callAI !== 'function') {
-      render({ state: 'error', message: SAFETY_UNAVAILABLE_MESSAGE });
+      render({
+        state: 'error',
+        error: 'safety-blocked',
+        message: SAFETY_UNAVAILABLE_MESSAGE
+      });
       return Promise.resolve();
     }
 
@@ -137,7 +162,11 @@
       })
       .then(function (checked) {
         if (!checked.decision || !checked.decision.allowed) {
-          render({ state: 'error', message: SAFETY_BLOCK_MESSAGE });
+          render({
+            state: 'error',
+            error: 'safety-blocked',
+            message: SAFETY_BLOCK_MESSAGE
+          });
           return null;
         }
 
@@ -188,10 +217,21 @@
       })
       .catch(function (error) {
         if (error && error.message === 'context-provider-failed') {
-          render({ state: 'error', message: PROVIDER_ERROR_MESSAGE });
+          var providerFailure = error.providerError || { error: 'network' };
+          render({
+            state: 'error',
+            error: providerFailure.error || providerFailure.code ||
+              providerFailure.kind || 'network',
+            failure: providerFailure,
+            message: toUserMessage(providerFailure, PROVIDER_ERROR_MESSAGE)
+          });
           return;
         }
-        render({ state: 'error', message: SAFETY_UNAVAILABLE_MESSAGE });
+        render({
+          state: 'error',
+          error: 'safety-blocked',
+          message: SAFETY_UNAVAILABLE_MESSAGE
+        });
       });
 
     function sendToProvider(prompt, key) {
@@ -209,7 +249,8 @@
         .then(function () {
           return d.callAI({
             key: key,
-            prompt: prompt
+            prompt: prompt,
+            taskType: action === 'translate' ? 'translation' : 'draft-reply'
           });
         })
         .then(function (result) {
@@ -217,7 +258,12 @@
               typeof result.text !== 'string' || !result.text.trim()) {
             render({
               state: 'error',
-              message: (result && result.message) || PROVIDER_ERROR_MESSAGE
+              error: result && result.error,
+              failure: result || { error: 'unavailable' },
+              message: toUserMessage(
+                result || { error: 'unavailable' },
+                (result && result.message) || PROVIDER_ERROR_MESSAGE
+              )
             });
             return;
           }
@@ -243,8 +289,15 @@
           }
           render({ state: 'ok', text: responseText });
         })
-        .catch(function () {
-          throw new Error('context-provider-failed');
+        .catch(function (error) {
+          var providerFailure = safeErrorDetails(error);
+          if (!providerFailure.error && !providerFailure.code &&
+              !providerFailure.kind && !providerFailure.name) {
+            providerFailure.error = 'network';
+          }
+          var wrapped = new Error('context-provider-failed');
+          wrapped.providerError = providerFailure;
+          throw wrapped;
         });
     }
   }
@@ -259,12 +312,16 @@
   }
 
   function defaultCallAI(win) {
-    var explain = win.SahayakExplain;
     return function (opts) {
-      if (!explain || typeof explain.explainSelection !== 'function') {
-        return Promise.reject(new Error('provider-unavailable'));
+      var providers = win.SahayakProviders;
+      if (!providers || typeof providers.callAI !== 'function') {
+        return Promise.resolve({
+          ok: false,
+          error: 'unavailable',
+          message: PROVIDER_ERROR_MESSAGE
+        });
       }
-      return explain.explainSelection(opts);
+      return providers.callAI(opts);
     };
   }
 
@@ -297,7 +354,16 @@
 
       function render(state, requestGeneration) {
         if (requestGeneration !== generation) return;
-        resultEl.textContent = state.text || state.message || '';
+        var toast = win.SahayakErrorToast;
+        var message = state.message || '';
+        if (state.failure || state.error) {
+          message = toast && typeof toast.show === 'function'
+            ? toast.show(state.failure || state, message)
+            : toUserMessage(state.failure || state, message);
+        } else if (state.state === 'working' || state.state === 'ok') {
+          if (toast && typeof toast.clear === 'function') toast.clear();
+        }
+        resultEl.textContent = state.text || message;
         resultEl.className = 'context-action-result' +
           (state.state === 'error' ? ' is-error' : '');
         currentResult = state.state === 'ok' && typeof state.text === 'string'
@@ -358,6 +424,8 @@
 
       function receive(request) {
         generation++;
+        var toast = win.SahayakErrorToast;
+        if (toast && typeof toast.clear === 'function') toast.clear();
         currentRequest = request;
         traceSelection('draft.request-received', request && request.text);
         picker.hidden = !request || request.action !== 'draft-reply';

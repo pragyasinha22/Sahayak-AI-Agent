@@ -212,9 +212,9 @@ async function main() {
     !/the provided information|the available context|i cannot answer reliably|i am unable to answer/i
       .test(questionDraftPrompt) &&
       questionDraftPrompt.includes('Do not mention being an AI') &&
-      questionDraftPrompt.includes('Do not force a greeting or sign-off') &&
-      questionDraftPrompt.includes('Never add name placeholders'),
-    'prompt prohibits AI-style disclaimers and forced greetings, sign-offs, or placeholders'
+      questionDraftPrompt.includes('For Email, include a clear subject line and a brief, professional greeting and closing.') &&
+      questionDraftPrompt.includes('Do not add name placeholders.'),
+    'prompt prohibits AI-style disclaimers and requires real email structure without placeholders'
   );
   const factSupportedPrompt = DraftPrompt.buildDraftPrompt(
     'How do you make sure each bottle is counted once? Do you trust the tracker ID or use a line-crossing check?',
@@ -242,12 +242,12 @@ async function main() {
   });
   check(
     new Set(draftPrompts).size === 3 &&
-      draftPrompts[0].includes('professional, concise email-style prose') &&
-      draftPrompts[0].includes('omit a greeting and sign-off for a short technical answer') &&
-      draftPrompts[1].includes('one conversational paragraph') &&
+      draftPrompts[0].includes('a clear, professional email with a subject line') &&
+      draftPrompts[0].includes('brief greeting') &&
+      draftPrompts[1].includes('one professional paragraph') &&
       draftPrompts[2].includes('Lead with the direct answer or observation') &&
-      draftPrompts[2].includes('do not use report labels or bullets for a short answer'),
-    'each draft context has a distinct tone and reply structure'
+      draftPrompts[2].includes('without email formatting'),
+    'each draft context now has a distinct tone and reply structure'
   );
   const compoundQuestion =
     'What technologies did you use to build your latest project, and what features does it support?';
@@ -279,13 +279,14 @@ async function main() {
         prompt.includes('For a compound question, answer every explicit part') &&
         prompt.includes('do not replace an answerable part with a generic follow-up');
     }) &&
-      compoundReplies[0] ===
-        'Thank you for asking.\n\n' +
-          'I built a Chrome extension using JavaScript and the Gemini API.\n\n' +
-          'It supports page summarisation and selected-text explanations.' &&
-      compoundReplies[1] ===
-        'Thanks for asking — ' + confirmedExtensionFacts &&
-      compoundReplies[2] === confirmedExtensionFacts,
+      compoundReplies[0].includes('Subject:') &&
+      compoundReplies[0].includes('Hi,') &&
+      compoundReplies[0].includes('I built a Chrome extension using JavaScript and the Gemini API.') &&
+      compoundReplies[0].includes('It supports page summarisation and selected-text explanations.') &&
+      compoundReplies[1].includes('Thanks for asking — I built a Chrome extension using JavaScript and the Gemini API.') &&
+      compoundReplies[1].includes('It supports page summarisation and selected-text explanations.') &&
+      compoundReplies[2].includes('I built a Chrome extension using JavaScript and the Gemini API.') &&
+      compoundReplies[2].includes('It supports page summarisation and selected-text explanations.'),
     'all three contexts preserve identical supported facts in distinct email, networking, and forum structures'
   );
   const partialCompoundReply = DraftPrompt.enforceProjectFacts(
@@ -657,7 +658,7 @@ async function main() {
     );
     check(
       !/Chrome extension|JavaScript|Gemini API/i.test(unrelatedReply) &&
-        /useful takeaway/i.test(unrelatedReply),
+        /This is a strong point:|bigger takeaway|strongest point here/i.test(unrelatedReply),
       'even an exact supplied fact is not forced into an unrelated discussion'
     );
     check(
@@ -777,14 +778,14 @@ async function main() {
     check(
       /first steps would you recommend/i.test(adviceReply) &&
         !/Good question|Curious what you think/i.test(adviceReply) &&
-        /useful takeaway/i.test(generalDiscussionReply) &&
-        /Thanks for sharing this perspective/i.test(linkedInDiscussionReply) &&
+          /most useful takeaway/i.test(generalDiscussionReply) &&
+          /This is a strong point:/i.test(linkedInDiscussionReply) &&
         !/Thanks for sharing/i.test(generalDiscussionReply) &&
         !/I led a team/i.test(generalDiscussionReply) &&
-        /^Thank you for sharing your perspective\./.test(emailAdviceReply) &&
-        !/^Hello,/.test(emailAdviceReply) &&
-        !/Best regards,$/.test(emailAdviceReply),
-      'advice and general discussion get context-appropriate replies without forced email salutations'
+          /^Subject: /i.test(emailAdviceReply) &&
+          /Hi,\n\n/i.test(emailAdviceReply) &&
+          /Best,\n$/.test(emailAdviceReply),
+        'advice and general discussion get context-appropriate replies in real email, LinkedIn, and forum formats'
     );
 
     const trusted = 'We use a line-crossing check to count each bottle once.';
@@ -1005,6 +1006,7 @@ async function main() {
       };
     });
     const calls = [];
+    const providerTasks = [];
     const geminiRequests = [];
     const storageWrites = [];
     const draftBuilderArguments = [];
@@ -1073,6 +1075,12 @@ async function main() {
           });
         }
       },
+      SahayakProviders: {
+        callAI: function (opts) {
+          providerTasks.push(opts);
+          return win.SahayakExplain.explainSelection(opts);
+        }
+      },
       SahayakPanel: {
         requestPageInfo: function () {
           return Promise.resolve({ url: 'https://example.test/path' });
@@ -1091,6 +1099,8 @@ async function main() {
         !elements['context-action-copy-result'].hidden,
       'Translate shows the full selection and provides copy controls for selection and result'
     );
+    check(providerTasks[0].taskType === 'translation',
+      'marks translation as an explicitly Groq-eligible task');
     await copySelection();
     await copyResult();
     check(
@@ -1152,6 +1162,10 @@ async function main() {
       const context = DraftPrompt.CONTEXTS[i];
       await buttonListeners[context]();
       const prompt = calls[calls.length - 1].prompt;
+      if (i === 0) {
+        check(providerTasks[providerTasks.length - 1].taskType === 'draft-reply',
+          'marks draft replies as explicitly Groq-eligible tasks');
+      }
       check(
         prompt.includes('in the ' + context + ' conversation') &&
           prompt.includes('https://example.test') &&

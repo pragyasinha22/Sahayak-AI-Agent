@@ -437,3 +437,442 @@ Pass condition
 
 
 --------------------------------------------------------------------------------------------
+======================================================================================
+We are starting Sahayak Week-2 Slice 2.3.1 — Visible-tab capture with crop UI.
+
+Read the Week-2 assignment documents completely before coding:
+
+- `Week-2/docs/problemStatement.md`
+- `Week-2/docs/architecture.md`
+- `Week-2/docs/implementation-plan.md`
+- `Week-2/docs/edge-case.md`
+- `Week-2/docs/promptsWeek2.md`
+
+Follow the exact Slice 2.3.1 requirements.
+
+**Objective:**
+Capture the visible browser tab and let the user focus/crop the screenshot before analysis.
+
+**Required implementation from the plan:**
+- `panel/features/screenshot.js`
+- `content/crop-driver.js`
+- Use `chrome.tabs.captureVisibleTab`.
+- Add the required `tabs` permission only if missing.
+- Extend the existing router to accept `capture-screenshot`.
+- Display a screenshot preview in the side panel.
+- Allow the user to drag a crop selection over the preview.
+- Clamp crop coordinates to image boundaries.
+- Reduce oversized images.
+- Keep screenshot data in panel memory only; never persist it.
+- Only the cropped image may leave the browser for later Gemini vision analysis.
+- Never route screenshot/image requests to Groq.
+- Preserve the existing MV3 architecture and safety requirements.
+
+**Acceptance criteria:**
+1. Screenshot capture works on a normal webpage.
+2. User can select a crop region.
+3. Crop is applied correctly.
+4. Crop coordinates are clamped.
+5. Oversized images are reduced.
+6. Only the cropped image is passed onward.
+7. Screenshot data is not persisted.
+
+**Chrome test required by the plan:**
+Open a webpage containing a chart, click Screenshot-and-Ask, crop the chart, and verify that the crop contains the intended chart region.
+
+**Important constraints:**
+- Modify Week-2 only.
+- Do not touch Week-1 or root duplicates.
+- Preserve completed 2.1.x and 2.2.x behavior.
+- Do not implement Slice 2.3.2 yet.
+- Do not implement provider reliability or Week-3 features early.
+- Add focused unit tests.
+- Inspect existing code before editing; reuse existing architecture.
+- Do not perform broad rewrites.
+
+**First response only:** Report the exact requirements, existing files to reuse, proposed files to change, dependencies, and implementation steps. Do not edit code yet.
+-------------------------------------------------------------------------------------------
+The plan is approved. Proceed with the smallest implementation for Week-2 Slice 2.3.1.
+
+Before editing:
+1. Verify that `Week-2/manifest.json` already contains the required `tabs` permission.
+2. Verify the existing router handles `capture-screenshot`.
+3. Account for the documented `content/crop-driver.js` component. Reuse it if appropriate; explain if the existing architecture makes it unnecessary.
+
+Implement:
+- `Week-2/panel/features/screenshot.js`
+- The required crop interaction component.
+- Router integration only if needed.
+- Screenshot preview and drag-to-crop UI.
+- Boundary-clamped crop coordinates.
+- Fixed, documented maximum image dimensions for oversized captures.
+- In-memory screenshot handling only.
+- Cropped image as the only output exposed for the later vision slice.
+
+Do not:
+- Persist screenshots or crops.
+- Add Gemini/Groq provider calls.
+- Implement Slice 2.3.2 or later slices.
+- Modify Week-1, root duplicates, or completed 2.1.x / 2.2.x behavior.
+
+Add focused tests for capture handling, crop coordinates, image-size reduction, and ensuring the full screenshot is not exposed as the analysis output.
+
+Run focused tests and relevant regression tests. Report exact files changed and test totals. Do not claim Chrome verification unless performed.
+===========================================================================================
+Investigate the Chrome runtime failure in Week-2 Slice 2.3.1.
+
+Actual browser result:
+Clicking "Capture visible tab" displays:
+"Sahayak could not capture the visible tab. Bring it to the front and try again."
+
+Inspect only these existing Week-2 files:
+- background/router.js
+- background/service-worker.js
+- panel/features/screenshot.js
+- panel/safety-gate.js
+- manifest.json
+
+Determine:
+1. What exact arguments are passed to chrome.tabs.captureVisibleTab?
+2. Is the correct browser window being targeted?
+3. Does the side-panel button click have the required activeTab permission context?
+4. Is the runtime message reaching the service worker?
+5. Is the actual Chrome API error being swallowed by the generic error handler?
+
+Do not edit files yet.
+Do not weaken or bypass the safety gate.
+Do not add permissions without explaining why they are required.
+Do not modify Week-1, root duplicates, or completed slices.
+
+Report the most likely root cause and the smallest safe fix.
+-----------------------------------------------------------------------------------------
+We are implementing **Sahayak — Week-2, Slice 2.3.2: Gemini Vision Q&A**.
+
+Repository:
+`C:\Users\psinh\Desktop\MasaiProjects\Sahayak-AI-Agent`
+
+Active scope: `Week-2` ONLY.
+
+## Current status
+- Week-1 is complete and frozen.
+- Week-2 slices 2.1.1 through 2.2.2 are complete.
+- Slice 2.3.1 (screenshot capture and cropping) is implemented, unit-tested, and manually verified in Chrome.
+- The screenshot crop is held in panel memory and exposed through `getCroppedImage()`.
+- Do not rewrite or unnecessarily modify the completed screenshot/crop implementation.
+
+## Your task
+First, inspect the Week-2 documentation, especially:
+- `Week-2/docs/problemStatement.md`
+- `Week-2/docs/architecture.md`
+- `Week-2/docs/implementation-plan.md`
+- `Week-2/docs/edge-case.md`
+- `Week-2/docs/promptsWeek2.md`
+
+Then inspect the existing screenshot, provider, router, safety, and test implementations.
+
+## Slice 2.3.2 requirements
+Implement only:
+- `Week-2/providers/gemini-vision.js`
+- `Week-2/panel/prompts/screenshot-qa.js`
+- Minimum necessary integration with the existing panel/router architecture.
+
+Requirements:
+1. Use Gemini exclusively for image-based questions.
+2. Send the cropped image from `getCroppedImage()`, never the original full screenshot.
+3. Include the user's question alongside the cropped image.
+4. Ground answers strictly in visible image content.
+5. Do not invent text, values, labels, or details that are not visible.
+6. Return an understandable error when the image is missing, invalid, or Gemini provides no usable response.
+7. Never send image data to Groq or any text-only fallback provider.
+8. Preserve existing safety checks and error handling.
+9. Keep screenshot data in panel memory only. Do not persist images or crops.
+10. Do not expose API keys to content scripts or the webpage.
+
+## Important boundaries
+- Do not implement provider retries, model tiering, Groq fallback, or later Week-2 slices.
+- Do not implement Week-3 features.
+- Do not modify Week-1, root duplicates, or unrelated completed slices.
+- Do not add unnecessary permissions or change shared message contracts unless the architecture requires it.
+- Preserve all existing functionality.
+
+## Tests required
+Add focused tests for:
+- Gemini receives the cropped image and user's question.
+- Full screenshot data is never sent.
+- Image requests are rejected by Groq or any text-only provider.
+- Missing or invalid crops produce understandable errors.
+- Empty or unusable Gemini responses produce understandable errors.
+- Answers remain grounded in image content as far as the implementation can enforce.
+
+Run relevant existing regression tests as well.
+
+## First response — planning only
+Do not edit files yet.
+
+Report:
+1. Exact documentation requirements for Slice 2.3.2.
+2. Existing files and functions that should be reused.
+3. Proposed files to create or modify.
+4. How you will guarantee that only the cropped image reaches Gemini.
+5. How you will prevent image data from reaching Groq.
+6. Focused tests and regression suites.
+7. Any architectural conflicts or missing dependencies.
+
+Wait for approval before implementation.
+--------------------------------------------------------------------------------------------
+We are starting Sahayak Week-2, Slice 2.4.1 — Provider abstraction + retry/backoff on 429.
+
+Repository:
+`C:\Users\psinh\Desktop\MasaiProjects\Sahayak-AI-Agent`
+
+Active scope: `Week-2` ONLY.
+
+## Completed work
+- Week-1 is complete and frozen.
+- Week-2 slices 2.1.1 through 2.3.2 are implemented and manually verified.
+- Screenshot Q&A uses Gemini Vision exclusively.
+- Existing functionality and completed slices must be preserved.
+
+## First inspect the documentation
+Read:
+- `Week-2/docs/problemStatement.md`
+- `Week-2/docs/architecture.md`
+- `Week-2/docs/implementation-plan.md`
+- `Week-2/docs/edge-case.md`
+- `Week-2/docs/promptsWeek2.md`
+
+Then inspect the existing provider implementations and their callers.
+
+## Slice 2.4.1 requirements
+
+The documented components include:
+- `Week-2/providers/base.js`
+- `Week-2/providers/retry.js`
+- `Week-2/providers/gemini.js`
+- `Week-2/providers/groq.js`
+
+Implement the provider abstraction and bounded retry behavior required by the documentation.
+
+Requirements:
+1. Unify provider invocation through the documented `callAI(task)` abstraction.
+2. Implement bounded retries for HTTP 429 rate-limit responses.
+3. Use exponential backoff with jitter.
+4. Introduce or reuse the documented `UnavailableError`.
+5. Return understandable errors when retries are exhausted or a provider is unavailable.
+6. Preserve existing provider-specific behavior where appropriate.
+7. Ensure retries do not become infinite.
+8. Ensure non-retryable errors are not retried unnecessarily.
+9. Keep Gemini Vision image requests separate from text-only provider fallback.
+10. Preserve safety checks and existing error handling.
+
+## Strict boundaries
+- Modify Week-2 only.
+- Do not modify Week-1 or root duplicates.
+- Do not implement model tiering (2.4.2).
+- Do not implement Groq fallback/eligibility changes (2.4.3).
+- Do not implement centralized UI errors (2.4.4).
+- Do not implement Week-3 features.
+- Avoid unnecessary manifest, router, or UI changes.
+- Preserve all completed 2.1.x, 2.2.x, and 2.3.x behavior.
+
+## First response: planning only
+Do not edit files yet.
+
+Report:
+1. Exact requirements from the implementation plan.
+2. Existing provider architecture and callers.
+3. Files to create or modify.
+4. Retry algorithm, maximum attempts, backoff and jitter strategy.
+5. How 429 errors will be identified.
+6. How other errors will be handled.
+7. How Gemini Vision remains protected from text-only fallback.
+8. Focused tests and regression suites.
+9. Any architectural conflicts or missing dependencies.
+
+Wait for approval before implementing.
+--------------------------------------------------------------------------------------------
+
+We are starting Sahayak Week-2, Slice 2.4.1 — Provider abstraction + retry/backoff on 429.
+
+Repository:
+`C:\Users\psinh\Desktop\MasaiProjects\Sahayak-AI-Agent`
+
+Active scope: `Week-2` ONLY.
+
+## Completed work
+- Week-1 is complete and frozen.
+- Week-2 slices 2.1.1 through 2.3.2 are implemented and manually verified.
+- Screenshot Q&A uses Gemini Vision exclusively.
+- Existing functionality and completed slices must be preserved.
+
+## First inspect the documentation
+Read:
+- `Week-2/docs/problemStatement.md`
+- `Week-2/docs/architecture.md`
+- `Week-2/docs/implementation-plan.md`
+- `Week-2/docs/edge-case.md`
+- `Week-2/docs/promptsWeek2.md`
+
+Then inspect the existing provider implementations and their callers.
+
+## Slice 2.4.1 requirements
+
+The documented components include:
+- `Week-2/providers/base.js`
+- `Week-2/providers/retry.js`
+- `Week-2/providers/gemini.js`
+- `Week-2/providers/groq.js`
+
+Implement the provider abstraction and bounded retry behavior required by the documentation.
+
+Requirements:
+1. Unify provider invocation through the documented `callAI(task)` abstraction.
+2. Implement bounded retries for HTTP 429 rate-limit responses.
+3. Use exponential backoff with jitter.
+4. Introduce or reuse the documented `UnavailableError`.
+5. Return understandable errors when retries are exhausted or a provider is unavailable.
+6. Preserve existing provider-specific behavior where appropriate.
+7. Ensure retries do not become infinite.
+8. Ensure non-retryable errors are not retried unnecessarily.
+9. Keep Gemini Vision image requests separate from text-only provider fallback.
+10. Preserve safety checks and existing error handling.
+
+## Strict boundaries
+- Modify Week-2 only.
+- Do not modify Week-1 or root duplicates.
+- Do not implement model tiering (2.4.2).
+- Do not implement Groq fallback/eligibility changes (2.4.3).
+- Do not implement centralized UI errors (2.4.4).
+- Do not implement Week-3 features.
+- Avoid unnecessary manifest, router, or UI changes.
+- Preserve all completed 2.1.x, 2.2.x, and 2.3.x behavior.
+
+## First response: planning only
+Do not edit files yet.
+
+Report:
+1. Exact requirements from the implementation plan.
+2. Existing provider architecture and callers.
+3. Files to create or modify.
+4. Retry algorithm, maximum attempts, backoff and jitter strategy.
+5. How 429 errors will be identified.
+6. How other errors will be handled.
+7. How Gemini Vision remains protected from text-only fallback.
+8. Focused tests and regression suites.
+9. Any architectural conflicts or missing dependencies.
+
+Wait for approval before implementing.
+
+-------------------------------------------------------------------------------------
+Approved. Proceed with Slice 2.4.1 under the agreed plan.
+
+Additional implementation requirements:
+
+1. Make retry delays and jitter deterministic in tests through injected or mocked dependencies. Do not make the test suite wait for real backoff delays.
+2. For streaming, explicitly track whether any chunk has been emitted. Retry only if the failure occurs before the first emitted chunk. Never restart a stream after partial output.
+3. Ensure retry limits are finite and documented.
+4. Preserve the existing `{ ok, error, message }` result contract and current feature-renderer behavior.
+5. Keep image-bearing tasks exclusively on Gemini Vision. No Groq invocation or fallback.
+6. Preserve all existing safety checks and completed Week-2 functionality.
+
+Implement only Slice 2.4.1. Do not implement 2.4.2, 2.4.3, 2.4.4, or Week-3 features.
+
+After implementation:
+- Run focused retry/provider tests.
+- Run the specified regression suites.
+- Run the complete Week-2 unit suite.
+- Run `node --check` on changed JavaScript files.
+- Validate manifest JSON if modified.
+- Run `git diff --check`.
+- Report exact files changed, retry limits and delays, and exact test totals.
+- Do not claim Chrome verification unless actually performed.
+
+Keep all changes inside Week-2 and preserve pre-existing uncommitted work.
+-----------------------------------------------------------------------------
+Next: Chrome verification
+1. Open chrome://extensions.
+2. Reload Sahayak.
+3. Open a Wikipedia article.
+4. Test Page Chat.
+5. Test Explain.
+6. Test Summarise.
+7. Test YouTube summarisation.
+8. Test screenshot Q&A.
+Check that successful requests still produce responses and that existing features have not regressed.
+
+You cannot reliably test actual HTTP 429 retry behavior just by clicking buttons. The unit tests cover that policy; don't deliberately exhaust your API quota.
+-------------------------------------------------------------------------------------
+Investigate a Chrome regression in Sahayak Week-2. Do not edit any files yet.
+
+## Observed problem
+
+In Chrome, on a Wikipedia article:
+
+1. I click Explain in the Sahayak side panel.
+2. Sahayak displays:
+   "Sahayak is now listening for your selection. Select any text on the page, then press Explain again."
+3. I select text on the webpage and click Explain again.
+4. The same listening message appears. No explanation is generated.
+
+The side panel still displays previously selected text under "Selected text".
+
+## Recent changes
+
+Slice 2.4.1 introduced provider abstraction and retry/backoff.
+
+Changed files included:
+- `Week-2/panel/features/explain.js`
+- `Week-2/providers/base.js`
+- `Week-2/providers/retry.js`
+- `Week-2/providers/gemini.js`
+- `Week-2/panel/side-panel.html`
+
+Before this slice, Explain and streaming had been manually verified successfully.
+
+## Investigation scope
+
+Inspect only Week-2:
+- `panel/features/explain.js`
+- `panel/features/context-actions.js`
+- `panel/side-panel.html`
+- `panel/side-panel.css`
+- `background/router.js`
+- `background/service-worker.js`
+- `providers/base.js`
+- `providers/retry.js`
+- `providers/gemini.js`
+- relevant selection-explain and provider tests.
+
+Determine:
+
+1. Why does clicking Explain repeatedly enter selection mode instead of processing the selected text?
+2. Is the selection text actually being captured and delivered to the panel?
+3. Is the Explain button's event handler being registered or executed twice?
+4. Is the existing selected text being cleared or ignored?
+5. Does the new `callAI(task)` integration receive the correct Explain task?
+6. Is a provider error preventing the response from rendering?
+7. Does the streaming path still update the assistant message after receiving chunks?
+8. Are there any Chrome runtime or service-worker errors?
+
+Compare the current implementation with the last working behavior if Git history or existing tests allow it.
+
+## Restrictions
+
+- Do not edit files.
+- Do not rewrite the selection workflow.
+- Do not weaken safety checks.
+- Do not modify Week-1, root duplicates, or unrelated completed slices.
+- Do not claim a cause without evidence.
+
+## Report
+
+Give me:
+- The exact root cause, if established.
+- The exact function and file responsible.
+- Whether this is a selection-flow bug, provider-integration bug, or both.
+- The smallest safe fix.
+- Tests that should be added or updated.
+
+Wait for approval before implementing anything.
+
+-----------------------------------------------------------------------------------

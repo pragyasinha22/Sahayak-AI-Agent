@@ -24,6 +24,8 @@
 
 (function (global) {
   const ROOT_KEY = 'sahayak';
+  const ROOT_WRITE_LOCK = 'sahayak-storage-root-write';
+  const DEFAULT_GROQ_MODEL = 'openai/gpt-oss-120b';
 
   /** Portable deep clone (JSON-safe; chrome.storage values are JSON-serialisable). */
   function deepClone(value) {
@@ -80,32 +82,60 @@
     });
   }
 
-  function storageSet(dottedPath, value) {
-    return new Promise((resolve, reject) => {
+  function withRootWriteLock(operation) {
+    const locks = global.navigator && global.navigator.locks;
+    if (!locks || typeof locks.request !== 'function') {
+      return Promise.reject(new Error(
+        'Web Locks API is unavailable; storage update was not applied.'
+      ));
+    }
+
+    try {
+      return locks.request(
+        ROOT_WRITE_LOCK,
+        { mode: 'exclusive' },
+        operation
+      );
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  function updateRoot(mutate) {
+    return withRootWriteLock(() => new Promise((resolve, reject) => {
       chrome.storage.local.get([ROOT_KEY], (items) => {
-        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-        // Clone so we never mutate the object Chrome handed us.
-        const root = items && items[ROOT_KEY] ? deepClone(items[ROOT_KEY]) : {};
-        pathSet(root, dottedPath, value);
-        chrome.storage.local.set({ [ROOT_KEY]: root }, () => {
-          if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-          resolve();
-        });
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        try {
+          // Clone so we never mutate the object Chrome handed us.
+          const root = items && items[ROOT_KEY] ? deepClone(items[ROOT_KEY]) : {};
+          mutate(root);
+          chrome.storage.local.set({ [ROOT_KEY]: root }, () => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+              return;
+            }
+            resolve();
+          });
+        } catch (error) {
+          reject(error);
+        }
       });
+    }));
+  }
+
+  function storageSet(dottedPath, value) {
+    return updateRoot((root) => {
+      pathSet(root, dottedPath, value);
     });
   }
 
   function storageRemove(dottedPath) {
-    return new Promise((resolve, reject) => {
-      chrome.storage.local.get([ROOT_KEY], (items) => {
-        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-        const root = items && items[ROOT_KEY] ? deepClone(items[ROOT_KEY]) : {};
-        pathRemove(root, dottedPath);
-        chrome.storage.local.set({ [ROOT_KEY]: root }, () => {
-          if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-          resolve();
-        });
-      });
+    return updateRoot((root) => {
+      pathRemove(root, dottedPath);
     });
   }
 
@@ -113,7 +143,10 @@
     ROOT_KEY,
     NAMESPACED: {
       GEMINI_KEY: 'settings.apiKeys.gemini',
+      GROQ_KEY: 'settings.apiKeys.groq',
+      GROQ_MODEL: 'settings.providers.groqModel',
     },
+    DEFAULT_GROQ_MODEL,
     storageGet,
     storageSet,
     storageRemove,

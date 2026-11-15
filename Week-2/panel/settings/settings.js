@@ -47,7 +47,9 @@
     // Module-private snapshot of the last-loaded key. Held only in memory;
     // never printed. Cleared on view reload.
     let currentKey = '';
+    let currentGroqKey = '';
     let revealTimer = null;
+    let groqRevealTimer = null;
 
     rootEl.innerHTML = `
       <div class="settings-form" role="region" aria-label="Sahayak settings">
@@ -85,6 +87,46 @@
           <button id="gemini-clear" class="btn btn-danger" type="button">Clear</button>
         </div>
 
+        <h3 class="settings-title">Groq text fallback</h3>
+        <p class="settings-subtitle">
+          Used only for eligible text tasks after Gemini retries fail. Images,
+          safety blocks, and invalid requests never use Groq.
+        </p>
+        <label class="field-label" for="groq-key-input">Groq API key</label>
+        <div class="field-row">
+          <input
+            id="groq-key-input"
+            class="field-input"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Optional Groq API key"
+          />
+          <button id="groq-reveal" class="btn btn-secondary" type="button" title="Temporarily show the value">Show</button>
+        </div>
+        <div class="field-actions">
+          <button id="groq-save" class="btn btn-primary" type="button">Save Groq key</button>
+          <button id="groq-clear" class="btn btn-danger" type="button">Clear Groq key</button>
+        </div>
+        <label class="field-label" for="groq-model-input">Groq model ID</label>
+        <div class="field-row">
+          <input
+            id="groq-model-input"
+            class="field-input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            aria-describedby="groq-model-help"
+          />
+          <button id="groq-model-save" class="btn btn-secondary" type="button">Save model</button>
+        </div>
+        <p id="groq-model-help" class="settings-subtitle">
+          Default: openai/gpt-oss-120b. Use a model ID supported by Groq.
+        </p>
+        <p id="groq-settings-status" class="settings-status" role="status" aria-live="polite">
+          Groq fallback is optional.
+        </p>
+
         <p
           id="settings-status"
           class="settings-status"
@@ -94,9 +136,9 @@
 
         <div class="settings-caveat" role="note">
           <strong>Security note.</strong>
-          Sahayak stores your key only in
+          Sahayak stores your keys only in
           <code>chrome.storage.local</code> on this device. It is never
-          committed to source control and never sent to content scripts. It is
+          committed to source control and never sent to content scripts. They are
           <em>not truly secret</em>: anyone with access to this browser profile
           can inspect extension storage. Treat it as a personal key, not a
           shared secret. See <code>docs/architecture.md</code> §9 and
@@ -118,6 +160,13 @@
     const emptyEl = rootEl.querySelector('.settings-empty');
     const targetLanguageEl = rootEl.querySelector('#translation-target-language');
     const targetLanguageStatusEl = rootEl.querySelector('#translation-target-status');
+    const groqInput = rootEl.querySelector('#groq-key-input');
+    const groqSaveBtn = rootEl.querySelector('#groq-save');
+    const groqClearBtn = rootEl.querySelector('#groq-clear');
+    const groqRevealBtn = rootEl.querySelector('#groq-reveal');
+    const groqModelInput = rootEl.querySelector('#groq-model-input');
+    const groqModelSaveBtn = rootEl.querySelector('#groq-model-save');
+    const groqStatusEl = rootEl.querySelector('#groq-settings-status');
 
     function setStatus(text, kind) {
       statusEl.textContent = text;
@@ -128,6 +177,11 @@
       targetLanguageStatusEl.textContent = text;
       targetLanguageStatusEl.className =
         'settings-status' + (kind ? ' is-' + kind : '');
+    }
+
+    function setGroqStatus(text, kind) {
+      groqStatusEl.textContent = text;
+      groqStatusEl.className = 'settings-status' + (kind ? ' is-' + kind : '');
     }
 
     function loadTranslationTarget() {
@@ -215,6 +269,43 @@
         });
     }
 
+    function hydrateGroqKey(keyValue) {
+      currentGroqKey = typeof keyValue === 'string' ? keyValue : '';
+      groqInput.value = currentGroqKey ? ApiKeys.maskKey(currentGroqKey) : '';
+      groqInput.dataset.hasValue = currentGroqKey ? '1' : '0';
+    }
+
+    function loadGroqSettings() {
+      if (typeof ApiKeys.getGroqKey !== 'function' ||
+          typeof ApiKeys.setGroqKey !== 'function' ||
+          typeof ApiKeys.removeGroqKey !== 'function' ||
+          typeof StorageManager.storageGet !== 'function' ||
+          typeof StorageManager.storageSet !== 'function') {
+        groqModelInput.value = StorageManager.DEFAULT_GROQ_MODEL;
+        setGroqStatus('Groq settings are unavailable.', 'warn');
+        return Promise.resolve();
+      }
+
+      return Promise.all([
+        ApiKeys.getGroqKey(StorageManager),
+        StorageManager.storageGet(StorageManager.NAMESPACED.GROQ_MODEL)
+      ]).then((values) => {
+        hydrateGroqKey(values[0]);
+        groqModelInput.value =
+          typeof values[1] === 'string' && values[1].trim()
+            ? values[1].trim()
+            : StorageManager.DEFAULT_GROQ_MODEL;
+        setGroqStatus(
+          currentGroqKey ? 'Groq fallback is configured locally.' : 'Groq fallback is optional.',
+          null
+        );
+      }).catch(() => {
+        hydrateGroqKey('');
+        groqModelInput.value = StorageManager.DEFAULT_GROQ_MODEL;
+        setGroqStatus('Could not read Groq settings. Defaults restored.', 'warn');
+      });
+    }
+
     saveBtn.addEventListener('click', () => {
       const raw = (input.value || '').trim();
 
@@ -276,7 +367,64 @@
       });
     });
 
-    return Promise.all([loadKey(), loadTranslationTarget()]);
+    groqSaveBtn.addEventListener('click', () => {
+      const raw = (groqInput.value || '').trim();
+      if (raw.includes('\u2026') || raw.includes('\u2022')) {
+        setGroqStatus('Value is masked. Paste the real key to overwrite.', 'warn');
+        return;
+      }
+      const save = raw
+        ? ApiKeys.setGroqKey(StorageManager, raw)
+        : ApiKeys.removeGroqKey(StorageManager);
+      save.then(() => {
+        hydrateGroqKey(raw);
+        setGroqStatus(
+          raw ? 'Groq key saved locally on this device.' : 'Groq key cleared.',
+          raw ? 'ok' : 'warn'
+        );
+      }).catch(() => {
+        setGroqStatus('Could not save the Groq key. Please try again.', 'err');
+      });
+    });
+
+    groqRevealBtn.addEventListener('click', () => {
+      if (!currentGroqKey) {
+        setGroqStatus('No Groq key to reveal.', 'warn');
+        return;
+      }
+      groqInput.type = 'text';
+      groqInput.value = currentGroqKey;
+      setGroqStatus('Groq key revealed briefly; it will be re-masked shortly.', 'warn');
+      if (groqRevealTimer) clearTimeout(groqRevealTimer);
+      groqRevealTimer = setTimeout(() => {
+        groqInput.type = 'password';
+        hydrateGroqKey(currentGroqKey);
+        setGroqStatus('Groq fallback is configured locally.', null);
+      }, 4000);
+    });
+
+    groqClearBtn.addEventListener('click', () => {
+      ApiKeys.removeGroqKey(StorageManager).then(() => {
+        hydrateGroqKey('');
+        setGroqStatus('Groq key cleared.', 'warn');
+      }).catch(() => {
+        setGroqStatus('Could not clear the Groq key.', 'err');
+      });
+    });
+
+    groqModelSaveBtn.addEventListener('click', () => {
+      const model = (groqModelInput.value || '').trim() ||
+        StorageManager.DEFAULT_GROQ_MODEL;
+      StorageManager.storageSet(StorageManager.NAMESPACED.GROQ_MODEL, model)
+        .then(() => {
+          groqModelInput.value = model;
+          setGroqStatus('Groq model setting saved locally.', 'ok');
+        }).catch(() => {
+          setGroqStatus('Could not save the Groq model setting.', 'err');
+        });
+    });
+
+    return Promise.all([loadKey(), loadGroqSettings(), loadTranslationTarget()]);
   }
 
   const api = { init };

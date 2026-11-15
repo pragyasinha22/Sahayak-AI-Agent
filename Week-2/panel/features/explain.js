@@ -45,9 +45,8 @@
   var SELECTION_MESSAGE_TYPE = 'sahayak:selection';
 
   // Gemini primary, lightweight tier by default (Arch §5.2). The model name and
-  // endpoint are the only vendor-specific values; both are overridable via
-  // explainSelection({ model, endpoint }) so the provider pattern stays testable
-  // and swappable without editing call sites.
+  // endpoint are the only vendor-specific values; both are overridable for
+  // focused provider tests.
   var GEMINI_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
   var GEMINI_MODEL = 'gemini-3.5-flash-lite';
 
@@ -159,18 +158,20 @@
     // ----------------------------------------------------------
     // Retry transient Gemini server errors only.
     // Maximum: 3 total attempts (initial request + 2 retries).
+    function fetchOnce() {
+      return fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': key // key travels ONLY as this header, never logged
+        },
+        body: body
+      });
+    }
+
     function fetchWithRetry(attempt) {
       return Promise.resolve()
-        .then(function () {
-          return fetchImpl(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': key // key travels ONLY as this header, never logged
-            },
-            body: body
-          });
-        })
+        .then(fetchOnce)
         .then(function (resp) {
           var retryable = resp &&
             [500, 502, 503, 504].indexOf(resp.status) !== -1;
@@ -189,7 +190,11 @@
         });
     }
 
-    return fetchWithRetry(0)
+    var fetchPromise = o.disableRetries === true
+      ? Promise.resolve().then(fetchOnce)
+      : fetchWithRetry(0);
+
+    return fetchPromise
       // --------------
       .then(function (resp) {
         if (!resp || typeof resp.status !== 'number') {
@@ -565,7 +570,21 @@
 
       var last = { text: '', truncated: false, tabId: null };
 
-      function render(text, cls) {
+      function render(text, cls, error) {
+        if (cls === 'is-err') {
+          var toast = win.SahayakErrorToast;
+          if (toast && typeof toast.show === 'function') {
+            text = toast.show(error || {}, text);
+          } else if (win.SahayakErrors &&
+              typeof win.SahayakErrors.toUserMessage === 'function') {
+            text = win.SahayakErrors.toUserMessage(error || {}, text);
+          }
+        } else {
+          var clearToast = win.SahayakErrorToast;
+          if (clearToast && typeof clearToast.clear === 'function') {
+            clearToast.clear();
+          }
+        }
         outputEl.textContent = text;
         outputEl.className = 'explain-output' + (cls ? ' ' + cls : '');
       }
@@ -671,7 +690,12 @@
             if (!key) { render(MISSING_KEY_MESSAGE, 'is-err'); return; }
 
             render('Explaining\u2026', 'is-warn');
-            return explainSelection({
+            var providers = win.SahayakProviders;
+            if (!providers || typeof providers.callAI !== 'function') {
+              render(NETWORK_MESSAGE, 'is-err');
+              return;
+            }
+            return providers.callAI({
               key: key,
               // Slice 1.7.1 — the panel's cached language feeds the prompt.
               prompt: buildExplainPrompt(
@@ -685,12 +709,12 @@
                   : '';
                 render(res.text + note, 'is-ok');
               } else {
-                render(res.message, 'is-err');
+                render(res.message, 'is-err', res);
               }
             });
           })
-          .catch(function () {
-            render(NETWORK_MESSAGE, 'is-err');
+          .catch(function (error) {
+            render(NETWORK_MESSAGE, 'is-err', error);
           });
       });
     });

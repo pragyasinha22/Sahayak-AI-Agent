@@ -51,13 +51,17 @@
 
   /**
    * Families that MUST pass the gate before leaving the panel.
-   * - Read paths (plan wording "extract-article") plus `scan-elements`,
-   *   which is the Week-3 page-read for the action map — same egress class.
+   * - Read paths include article extraction, screenshot capture, and
+   *   `scan-elements`, the Week-3 page-read for the action map.
    * - Action paths ("execute-approved" — every content-script command).
    * `ping` stays unguarded: it is the router's own round-trip and carries
    * no page content (Slice 1.1.4 acceptance must not regress).
    */
-  const READ_FAMILIES = ['extract-article', 'scan-elements'];
+  const READ_FAMILIES = [
+    'extract-article',
+    'scan-elements',
+    'capture-screenshot'
+  ];
   const ACTION_FAMILIES = ['execute-approved'];
   const GUARDED_FAMILIES = new Set([...READ_FAMILIES, ...ACTION_FAMILIES]);
 

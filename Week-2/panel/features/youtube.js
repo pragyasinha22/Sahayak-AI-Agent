@@ -46,6 +46,36 @@
     'Sahayak couldn\u2019t read the video data. Reload the video page and ' +
     'try again.';
 
+  function toUserMessage(error, fallback) {
+    var errors = global.SahayakErrors;
+    return errors && typeof errors.toUserMessage === 'function'
+      ? errors.toUserMessage(error, fallback)
+      : (fallback || MSG_UNAVAILABLE);
+  }
+
+  function safeErrorDetails(error) {
+    var source = error && typeof error === 'object' ? error : {};
+    return {
+      error: typeof source.error === 'string' ? source.error : '',
+      code: typeof source.code === 'string' ? source.code : '',
+      kind: typeof source.kind === 'string' ? source.kind : '',
+      name: typeof source.name === 'string' ? source.name : '',
+      status: Number.isFinite(source.status) ? source.status : null
+    };
+  }
+
+  function showPanelError(error, fallback) {
+    var toast = global.SahayakErrorToast;
+    return toast && typeof toast.show === 'function'
+      ? toast.show(error, fallback)
+      : toUserMessage(error, fallback);
+  }
+
+  function clearPanelError() {
+    var toast = global.SahayakErrorToast;
+    if (toast && typeof toast.clear === 'function') toast.clear();
+  }
+
   function blockMessage(reason) {
     return 'Blocked by safety (' + (reason || 'blocked') +
       '). Sahayak won\u2019t read or summarise this page.';
@@ -192,12 +222,43 @@
                   render({ state: 'missing-key', message: defaultMissingKeyMessage() });
                   return;
                 }
-                return callAI({ key: key, prompt: buildYouTubePrompt(inner, currentLanguage()) });
+                return Promise.resolve()
+                  .then(function () {
+                    return callAI({
+                      key: key,
+                      prompt: buildYouTubePrompt(inner, currentLanguage()),
+                      taskType: 'text-summary'
+                    });
+                  })
+                  .then(function (ai) {
+                    return { ai: ai };
+                  })
+                  .catch(function (error) {
+                    var failure = safeErrorDetails(error);
+                    var kind = global.SahayakErrors &&
+                      typeof global.SahayakErrors.getKind === 'function'
+                      ? global.SahayakErrors.getKind(failure)
+                      : '';
+                    return {
+                      ai: {
+                        ok: false,
+                        error: kind || 'network',
+                        failure: failure,
+                        message: toUserMessage(failure, MSG_UNAVAILABLE)
+                      }
+                    };
+                  });
               })
-              .then(function (ai) {
+              .then(function (outcome) {
+                var ai = outcome && outcome.ai;
                 if (ai === undefined || ai === null) return;
                 if (!ai.ok || !ai.text) {
-                  render({ state: 'error', message: ai.message || MSG_UNAVAILABLE });
+                  render({
+                    state: 'error',
+                    error: ai.error,
+                    failure: ai.failure || ai,
+                    message: toUserMessage(ai.failure || ai, ai.message || MSG_UNAVAILABLE)
+                  });
                   return;
                 }
                 render({
@@ -236,11 +297,11 @@
     return Promise.resolve(apiKeys.getGeminiKey(storageManager));
   }
   function defaultCallAI(opts) {
-    var ex = global.SahayakExplain;
-    if (!ex || typeof ex.explainSelection !== 'function') {
-      return Promise.resolve({ ok: false, error: 'no-provider', message: MSG_UNAVAILABLE });
+    var providers = global.SahayakProviders;
+    if (!providers || typeof providers.callAI !== 'function') {
+      return Promise.resolve({ ok: false, error: 'unavailable', message: MSG_UNAVAILABLE });
     }
-    return ex.explainSelection(opts);
+    return providers.callAI(opts);
   }
   function defaultMissingKeyMessage() {
     var ex = global.SahayakExplain;
@@ -278,6 +339,13 @@
 
       function render(st) {
         if (!st) return;
+        if (st.state === 'checking' || st.state === 'reading' ||
+            st.state === 'summarising' || st.state === 'ok') {
+          clearPanelError();
+        } else if (st.failure || st.error || st.state === 'blocked' ||
+            st.state === 'unavailable') {
+          st.message = showPanelError(st.failure || st, st.message || MSG_UNAVAILABLE);
+        }
         switch (st.state) {
           case 'checking':
             setTitle(''); outputEl.textContent = 'Checking this page is safe to read\u2026';

@@ -162,9 +162,10 @@ chrome.action.onClicked.addListener((tab) => {
  * The router is intentionally thin:
  *   - It validates every envelope against the shared message contract.
  *   - It answers `ping` directly (Slice 1.1.4 acceptance).
- *   - It forwards tab-targeted families (extract-article, scan-elements,
- *     capture-screenshot, execute-approved) to the tab that owns the
- *     content-script listener, via chrome.tabs.sendMessage(payload.tabId, ...).
+ *   - It forwards content-targeted families (extract-article, scan-elements,
+ *     execute-approved) to the tab via chrome.tabs.sendMessage. The
+ *     capture-screenshot family is handled by the router using
+ *     chrome.tabs.captureVisibleTab.
  *   - It NEVER enriches a routed message with anything read from storage,
  *     so an apiKey cannot leak even if a future caller forgets the guard.
  *

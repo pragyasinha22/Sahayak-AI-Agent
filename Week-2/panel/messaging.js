@@ -33,7 +33,8 @@
  *   - We never log `payload`. Only stable error codes are logged (INV-9).
  *
  * deps (all injectable for Node unit tests):
- *   { gate, tabsApi, safetyGateModule, isDevBuild, requestConfirm, console }
+ *   { gate, tabsApi, scriptingApi, safetyGateModule, isDevBuild,
+ *     requestConfirm, console }
  *   isDevBuild defaults to an unpacked-load check via the manifest
  *   (updateUrl is present only for Web Store / policy-installed builds).
  * -----------------------------------------------------------------------------
@@ -41,6 +42,50 @@
 'use strict';
 
 (function (global) {
+  function collectPageSafetyHints() {
+    var controls = document.querySelectorAll('input, textarea, select');
+    var fields = [];
+    var maxFields = 200;
+    var count = Math.min(controls.length, maxFields);
+
+    for (var i = 0; i < count; i += 1) {
+      var control = controls[i];
+      var labels = [];
+      if (control.labels) {
+        for (var labelIndex = 0; labelIndex < control.labels.length && labelIndex < 2; labelIndex += 1) {
+          var label = control.labels[labelIndex];
+          var labelText = label && (label.innerText || label.textContent);
+          if (typeof labelText === 'string' && labelText.trim()) {
+            labels.push(labelText.trim().slice(0, 120));
+          }
+        }
+      }
+
+      var maxlengthValue = parseInt(control.getAttribute('maxlength') || '', 10);
+      var type = control.getAttribute('type') || '';
+      fields.push({
+        tag: String(control.tagName || '').toLowerCase(),
+        type: type,
+        name: control.getAttribute('name') || '',
+        id: control.getAttribute('id') || '',
+        placeholder: (control.getAttribute('placeholder') || '').slice(0, 160),
+        autocomplete: (control.getAttribute('autocomplete') || '').slice(0, 80),
+        inputmode: (control.getAttribute('inputmode') || '').slice(0, 40),
+        maxlength: Number.isFinite(maxlengthValue) ? maxlengthValue : null,
+        label: labels.join(' ').slice(0, 160),
+        ariaLabel: (control.getAttribute('aria-label') || '').slice(0, 160)
+      });
+    }
+
+    return {
+      fields: fields,
+      fieldsTruncated: controls.length > maxFields,
+      hasLoginForm: fields.some(function (field) {
+        return field.type.toLowerCase() === 'password';
+      })
+    };
+  }
+
   function install(g, deps) {
     const D = deps || {};
     const contract = g && g.SahayakMessageContract;
@@ -89,6 +134,7 @@
     }
 
     const tabsApi = D.tabsApi || (typeof chrome !== 'undefined' ? chrome.tabs : undefined);
+    const scriptingApi = D.scriptingApi || (typeof chrome !== 'undefined' ? chrome.scripting : undefined);
 
     // ------------------------------------------------------------------
     // Core send. `send` is the raw channel; the WeakSet+Symbol mark made
@@ -209,9 +255,9 @@
     }
 
     /**
-     * Slice 1.2.2 — reads the target tab's URL so the gate can classify it.
-     * Restricted/empty URLs come back as `url: ''` which classifyPage maps
-     * to `unknown` → block (deny-biased, EC-W2-12).
+     * Reads the target URL and bounded, value-free form metadata so the gate
+     * can classify sensitive pages before any page content is extracted.
+     * If DOM inspection is unavailable, the gate receives a deny-biased hint.
      */
     function requestPageInfo(tabId) {
       return new Promise(function (resolve, reject) {
@@ -224,7 +270,50 @@
             reject(new Error(chrome.runtime.lastError.message || 'tab-get-failed'));
             return;
           }
-          resolve({ url: (tab && typeof tab.url === 'string') ? tab.url : '' });
+          const url = (tab && typeof tab.url === 'string') ? tab.url : '';
+          const pageInfo = { url: url };
+          if (tab && typeof tab.title === 'string') {
+            pageInfo.hints = { title: tab.title };
+          }
+          if (!/^https?:\/\//i.test(url)) {
+            resolve(pageInfo);
+            return;
+          }
+          if (!scriptingApi || typeof scriptingApi.executeScript !== 'function') {
+            pageInfo.hints = Object.assign({}, pageInfo.hints || {}, {
+              safetyHintsUnavailable: true
+            });
+            resolve(pageInfo);
+            return;
+          }
+
+          try {
+            scriptingApi.executeScript({
+              target: { tabId: tabId },
+              func: collectPageSafetyHints
+            }, function (results) {
+              if (
+                chrome.runtime.lastError ||
+                !Array.isArray(results) ||
+                !results[0] ||
+                !results[0].result ||
+                typeof results[0].result !== 'object'
+              ) {
+                pageInfo.hints = Object.assign({}, pageInfo.hints || {}, {
+                  safetyHintsUnavailable: true
+                });
+                resolve(pageInfo);
+                return;
+              }
+              pageInfo.hints = Object.assign({}, pageInfo.hints || {}, results[0].result);
+              resolve(pageInfo);
+            });
+          } catch (_) {
+            pageInfo.hints = Object.assign({}, pageInfo.hints || {}, {
+              safetyHintsUnavailable: true
+            });
+            resolve(pageInfo);
+          }
         });
       });
     }
@@ -307,7 +396,10 @@
     return api;
   }
 
-  const api = { install: install };
+  const api = {
+    install: install,
+    collectPageSafetyHints: collectPageSafetyHints
+  };
 
   if (typeof module === 'object' && module.exports) {
     module.exports = api;

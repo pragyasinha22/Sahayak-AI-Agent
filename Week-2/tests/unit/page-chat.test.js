@@ -7,10 +7,12 @@
 const assert = require('node:assert/strict');
 const Preferences = require('../../state/preferences.js');
 const PageChatPrompt = require('../../panel/prompts/page-chat.js');
+const Errors = require('../../shared/errors.js');
 const Chat = require('../../panel/features/chat.js');
 
 globalThis.SahayakPreferences = Preferences;
 globalThis.SahayakPageChat = PageChatPrompt;
+globalThis.SahayakErrors = Errors;
 
 let pass = 0;
 let fail = 0;
@@ -80,8 +82,8 @@ function makeDeps(options) {
     },
     callAI: function (opts) {
       events.push('call-ai');
-      if (o.onCallAI) o.onCallAI(opts);
-      return Promise.resolve({ ok: true, text: 'A grounded answer.' });
+      var result = o.onCallAI ? o.onCallAI(opts) : null;
+      return Promise.resolve(result || { ok: true, text: 'A grounded answer.' });
     }
   };
   if (o.panelOverrides) Object.assign(panel, o.panelOverrides);
@@ -202,6 +204,8 @@ async function main() {
       calledWith.prompt.includes('What is the key finding?') &&
       calledWith.prompt.includes('y'.repeat(250)),
     'provider receives the question and extracted text via explainSelection-compatible options');
+    check(calledWith.taskType === 'page-chat',
+      'marks Page Chat as an explicitly Groq-eligible task');
     var streamingStates = success.rendered.filter(function (state) {
       return state.state === 'streaming';
     });
@@ -288,6 +292,52 @@ async function main() {
       'article exactly at the limit is not incorrectly marked truncated'
     );
   }
+
+  {
+    var failed = makeDeps({
+      onCallAI: function () {
+        return {
+          ok: false,
+          error: 'network',
+          message: 'A raw transport exception must not be shown.'
+        };
+      }
+    });
+    await Chat.runChat(failed.deps);
+    var failure = failed.rendered[failed.rendered.length - 1];
+    check(
+      failure.state === 'error' &&
+        failure.error === 'network' &&
+        failure.message === Errors.MESSAGES.network,
+      'renders a short mapped provider failure instead of the provider exception text'
+    );
+  }
+
+  {
+    var partialFailure = makeDeps({
+      onCallAI: function (opts) {
+        opts.onChunk('Partial answer');
+        return {
+          ok: false,
+          error: 'network',
+          message: 'Connection closed after the first chunk.'
+        };
+      }
+    });
+    await Chat.runChat(partialFailure.deps);
+    var states = partialFailure.rendered;
+    var failure = states[states.length - 1];
+    check(
+      states.some(function (state) {
+        return state.state === 'streaming' && state.chunk === 'Partial answer';
+      }) &&
+        failure.state === 'error' &&
+        failure.partialText === 'Partial answer' &&
+        failure.message === "Sahayak's response stopped early. Ask again to continue.",
+      'keeps streamed text and emits an understandable interruption note after a partial failure'
+    );
+  }
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   if (fail) process.exitCode = 1;
 }

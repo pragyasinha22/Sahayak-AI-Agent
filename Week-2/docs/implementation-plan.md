@@ -354,14 +354,14 @@ Placed before any page-read or action feature. Introduced here as a pure module;
 #### Slice 2.4.3 — Groq text-only fallback for eligible tasks
 
 - **Objective:** Free-tier resilience via provider fallback.
-- **Features:** eligibility gate; Groq adapter.
-- **Components:** `providers/eligibility.js`.
-- **Files:** create; modify `providers/base.js`.
+- **Features:** task eligibility gate, Groq adapter, and Side Panel Settings for the Groq key and model.
+- **Components:** `providers/eligibility.js`, `providers/groq.js`, `state/api-keys.js`, `panel/settings/settings.js`.
+- **Files:** create the eligibility gate; modify the provider layer, documented eligible task callers, local key storage, and Side Panel Settings.
 - **Depends:** 2.4.1.
-- **Steps:** any task carrying an image, or requiring strict multi-modal reasoning → **not** eligible for Groq (Arch §5.1); eligible: page chat, translate, draft reply, text-only summarise, JSON action selection; on Gemini unavailable + eligible task, route to Groq; else return understandable error.
-- **Acceptance:** vision requests never routed to Groq; Groq works when Gemini is down.
-- **Chrome test:** mock Gemini as unavailable; run text-only translate → served by Groq; run screenshot Q&A → returns understandable error, not routed to Groq.
-- **Unit tests:** eligibility table; vision + Groq combination throws.
+- **Steps:** any task carrying an image, requiring vision, or outside the documented eligible categories → **not** eligible for Groq (Arch §5.1). Eligible tasks are page chat, translation, draft reply, text-only summaries, and JSON action selection. Try Groq only after Gemini's bounded retries are exhausted for a retryable 429, selected 5xx, or network failure; do not fall back for authentication, invalid-request, unsupported-model, missing-Gemini-key, image, or partially emitted stream failures. Keep the fallback one-way and use the Groq model `openai/gpt-oss-120b` by default, configurable in Side Panel Settings.
+- **Acceptance:** vision requests never reach Groq; eligible text tasks use Groq only after retryable Gemini failures exhaust retries; missing Groq configuration and failed fallback return understandable errors. Store the Groq key only in `chrome.storage.local` and never expose it to content scripts.
+- **Chrome test:** configure a Groq key; mock Gemini as unavailable with a retryable failure and run text-only translation → served by Groq; run screenshot Q&A and a partially emitted stream → never routed to Groq.
+- **Unit tests:** eligibility table; key masking/storage and Settings; default/configured Groq model; retry exhaustion and non-retryable exclusions; image and partial-stream protections; Groq failure result contract.
 - **Result:** PS §2.11 fallback satisfied; Arch §5.1 enforced.
 
 #### Slice 2.4.4 — Understandable errors and graceful degradation

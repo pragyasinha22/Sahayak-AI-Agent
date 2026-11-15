@@ -8,7 +8,7 @@
  *      or sent before the gate passes (Arch §6.1),
  *   2. send extracted text + the summary template
  *      (panel/prompts/article-summary.js) to Gemini via the Slice 1.3.1
- *      provider pattern (SahayakExplain.explainSelection — text-in/text-out),
+ *      provider pattern (SahayakProviders.callAI — text-in/text-out),
  *   3. parse the reply into three sections and render TL;DR, five key points
  *      and next actions — or a graceful retry message when malformed.
  *
@@ -50,6 +50,36 @@
     'The page doesn\u2019t say enough for Sahayak to summarise it. Open a ' +
     'real article and try again.';
 
+  function toUserMessage(error, fallback) {
+    var errors = global.SahayakErrors;
+    return errors && typeof errors.toUserMessage === 'function'
+      ? errors.toUserMessage(error, fallback)
+      : (fallback || MSG_UNAVAILABLE);
+  }
+
+  function safeErrorDetails(error) {
+    var source = error && typeof error === 'object' ? error : {};
+    return {
+      error: typeof source.error === 'string' ? source.error : '',
+      code: typeof source.code === 'string' ? source.code : '',
+      kind: typeof source.kind === 'string' ? source.kind : '',
+      name: typeof source.name === 'string' ? source.name : '',
+      status: Number.isFinite(source.status) ? source.status : null
+    };
+  }
+
+  function showPanelError(error, fallback) {
+    var toast = global.SahayakErrorToast;
+    return toast && typeof toast.show === 'function'
+      ? toast.show(error, fallback)
+      : toUserMessage(error, fallback);
+  }
+
+  function clearPanelError() {
+    var toast = global.SahayakErrorToast;
+    if (toast && typeof toast.clear === 'function') toast.clear();
+  }
+
   function blockMessage(reason) {
     return 'Blocked by safety (' + (reason || 'blocked') +
       '). Sahayak won\u2019t read or summarise this page.';
@@ -62,7 +92,7 @@
    *              guardedSend), `scripting` — chrome.scripting,
    * `getKey`  — () => Promise<string|null>, `callAI` —
    *              ({key, prompt}) => Promise<{ok, text?|message?}> (defaults to
-   *              SahayakExplain.explainSelection), `render` receives a state
+   *              SahayakProviders.callAI), `render` receives a state
    * object. Never throws; every failure becomes a stable rendered message.
    */
   function runSummarise(deps) {
@@ -103,6 +133,7 @@
         if (!step.dec || !step.dec.allowed) {
           render({
             state: 'blocked',
+            error: 'safety-blocked',
             reason: step.dec && step.dec.reason,
             message: blockMessage(step.dec && step.dec.reason)
           });
@@ -150,16 +181,44 @@
                   });
                   return;
                 }
-                return callAI({
-                  key: key,
-                  prompt: global.SahayakArticleSummary
-                    .buildSummaryPrompt(article, currentLanguage())
-                });
+                return Promise.resolve()
+                  .then(function () {
+                    return callAI({
+                      key: key,
+                      prompt: global.SahayakArticleSummary
+                        .buildSummaryPrompt(article, currentLanguage()),
+                      taskType: 'text-summary'
+                    });
+                  })
+                  .then(function (ai) {
+                    return { ai: ai };
+                  })
+                  .catch(function (error) {
+                    var failure = safeErrorDetails(error);
+                    var kind = global.SahayakErrors &&
+                      typeof global.SahayakErrors.getKind === 'function'
+                      ? global.SahayakErrors.getKind(failure)
+                      : '';
+                    return {
+                      ai: {
+                        ok: false,
+                        error: kind || 'network',
+                        failure: failure,
+                        message: toUserMessage(failure, MSG_UNAVAILABLE)
+                      }
+                    };
+                  });
               })
-              .then(function (ai) {
+              .then(function (outcome) {
+                var ai = outcome && outcome.ai;
                 if (ai === undefined || ai === null) return; // missing-key path
                 if (!ai.ok) {
-                  render({ state: 'error', message: ai.message || MSG_UNAVAILABLE });
+                  render({
+                    state: 'error',
+                    error: ai.error,
+                    failure: ai.failure || ai,
+                    message: toUserMessage(ai.failure || ai, ai.message || MSG_UNAVAILABLE)
+                  });
                   return;
                 }
                 // STEP 3 — parse the three sections; enforce acceptance.
@@ -211,13 +270,13 @@
     return Promise.resolve(apiKeys.getGeminiKey(storageManager));
   }
   function defaultCallAI(opts) {
-    var ex = global.SahayakExplain;
-    if (!ex || typeof ex.explainSelection !== 'function') {
+    var providers = global.SahayakProviders;
+    if (!providers || typeof providers.callAI !== 'function') {
       return Promise.resolve({
-        ok: false, error: 'no-provider', message: MSG_UNAVAILABLE
+        ok: false, error: 'unavailable', message: MSG_UNAVAILABLE
       });
     }
-    return ex.explainSelection(opts);
+    return providers.callAI(opts);
   }
   function defaultMissingKeyMessage() {
     var ex = global.SahayakExplain;
@@ -270,6 +329,16 @@
       function render(st) {
         if (!st) return;
         outputEl.className = 'summary-output';
+        if (st.state === 'checking' || st.state === 'extracting' ||
+            st.state === 'summarising' || st.state === 'ok') {
+          clearPanelError();
+        } else if (st.failure || st.error || st.state === 'blocked' ||
+            st.state === 'unavailable') {
+          st.message = showPanelError(
+            st.failure || st,
+            st.message || MSG_UNAVAILABLE
+          );
+        }
         switch (st.state) {
           case 'checking':
             clear(); addLine('summary-status', 'Checking this page is safe to read\u2026'); break;

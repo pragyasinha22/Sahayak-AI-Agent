@@ -72,6 +72,11 @@ function makePanelChrome(opts) {
         return { version: 'test', manifest_version: 3 };
       },
     },
+    scripting: {
+      executeScript: function (opts, cb) {
+        cb([{ result: { fields: [], hasLoginForm: false, fieldsTruncated: false } }]);
+      },
+    },
     tabs: {
       get: function (tabId, cb) {
         state.tabsGets.push(tabId);
@@ -276,11 +281,13 @@ section('blocked requests never reach the router');
     'read on bank tab blocked');
   await rejects(api.guardedSend('scan-elements', { tabId: 3 }), 'safety-blocked:',
     'scan-elements on bank tab blocked (read family)');
+  await rejects(api.guardedSend('capture-screenshot', { tabId: 3 }), 'safety-blocked:',
+    'screenshot capture on bank tab blocked (read family)');
   await rejects(api.guardedSend('execute-approved', { tabId: 3, action: { type: 'click', target: { tag: 'a', text: 'Home' } } }),
     'safety-blocked:', 'action on bank tab blocked even for ordinary target');
 
   assert(state.sends.length === 0, 'no chrome.runtime.sendMessage call was made for ANY blocked request');
-  assert(state.tabsGets.length === 3, 'gate still consulted tab context each time (deny is informed)');
+  assert(state.tabsGets.length === 4, 'gate still consulted tab context each time (deny is informed)');
 }
 
 // ==========================================================================
@@ -422,14 +429,19 @@ section('Slice 1.1.4 behaviour preserved');
 // ==========================================================================
 section('gate family vocabulary + missing modules');
 {
-  assert(Gate.READ_FAMILIES.includes('extract-article') && Gate.READ_FAMILIES.includes('scan-elements'),
-    'READ_FAMILIES = extract-article + scan-elements');
+  assert(Gate.READ_FAMILIES.includes('extract-article') &&
+    Gate.READ_FAMILIES.includes('scan-elements') &&
+    Gate.READ_FAMILIES.includes('capture-screenshot'),
+    'READ_FAMILIES includes article extraction, element scanning, and screenshot capture');
   assert(Gate.ACTION_FAMILIES.includes('execute-approved'), 'ACTION_FAMILIES = execute-approved');
   assert(!Gate.READ_FAMILIES.includes('ping') && !Gate.ACTION_FAMILIES.includes('ping'),
     'ping is never a guarded family (Slice 1.1.4 acceptance preserved)');
 
   const gate = Gate.makeGate({ RULES, CLASSIFIERS, POLICY });
-  assert(gate.requiresGuard('extract-article') && gate.requiresGuard('execute-approved') && !gate.requiresGuard('ping'),
+  assert(gate.requiresGuard('extract-article') &&
+    gate.requiresGuard('capture-screenshot') &&
+    gate.requiresGuard('execute-approved') &&
+    !gate.requiresGuard('ping'),
     'requiresGuard matches the guarded set');
 
   // Missing safety modules → makeGate throws loudly (no silent allow).

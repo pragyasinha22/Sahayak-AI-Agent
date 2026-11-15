@@ -40,6 +40,19 @@
     return manager.storageRemove(manager.NAMESPACED.GEMINI_KEY);
   }
 
+  function getGroqKey(manager) {
+    return manager.storageGet(manager.NAMESPACED.GROQ_KEY);
+  }
+
+  function setGroqKey(manager, value) {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    return manager.storageSet(manager.NAMESPACED.GROQ_KEY, trimmed);
+  }
+
+  function removeGroqKey(manager) {
+    return manager.storageRemove(manager.NAMESPACED.GROQ_KEY);
+  }
+
   /**
    * Redact a key for display. Shows up to head characters, a middot ellipsis,
    * and up to tail characters. Empty/null input returns an empty string so
@@ -63,7 +76,16 @@
     return typeof value === 'string' && /^AIza[\w-]{30,}$/.test(value);
   }
 
-  const api = { getGeminiKey, setGeminiKey, removeGeminiKey, maskKey, looksLikeGeminiKey };
+  const api = {
+    getGeminiKey,
+    setGeminiKey,
+    removeGeminiKey,
+    getGroqKey,
+    setGroqKey,
+    removeGroqKey,
+    maskKey,
+    looksLikeGeminiKey
+  };
 
   if (typeof module === 'object' && module.exports) {
     module.exports = api;

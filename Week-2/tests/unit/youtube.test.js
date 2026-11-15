@@ -244,12 +244,17 @@ async function main() {
     let promptSeen = '';
     const d = makeDeps();
     const out = [];
+    let summaryTaskType = '';
     await YouTube.runYouTubeSummarise({
       panel: d.panel, scripting: d.scripting,
       parseUrl: YouTubeUrl.parseYouTubeUrl,
       render: (st) => out.push(st),
       getKey: () => Promise.resolve('SECRET-KEY-123'),
-      callAI: (opts) => { promptSeen = opts.prompt; return Promise.resolve({ ok: true, text: '- [0:00] Intro\nOverall: good' }); }
+      callAI: (opts) => {
+        promptSeen = opts.prompt;
+        summaryTaskType = opts.taskType;
+        return Promise.resolve({ ok: true, text: '- [0:00] Intro\nOverall: good' });
+      }
     });
     assert(d.calls.join(',') === 'guardRead,executeScript,guardedSend',
       'order is gate -> inject -> sanctioned egress');
@@ -260,6 +265,8 @@ async function main() {
       'transcript text feeds the prompt');
     assert(promptSeen.indexOf('<div') === -1 && promptSeen.indexOf('SECRET-KEY-123') === -1,
       'prompt carries no HTML and never the API key (GDR-7 / GDR-3)');
+    assert(summaryTaskType === 'text-summary',
+      'marks YouTube transcript summaries as explicitly Groq-eligible text tasks');
 
     const dB = makeDeps({ dec: { allowed: false, reason: 'sensitive-host' } });
     const outB = [];

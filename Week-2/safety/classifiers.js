@@ -29,7 +29,8 @@
  * Not implemented here (owned by later slices):
  *   - Decisions (`allow | require-confirm | block`) → safety/policy.js.
  *   - The gate wrapping panel egress → Slice 1.2.2 `panel/safety-gate.js`.
- *   - Enriching `hints` from live DOM signals → Slice 1.2.2 wiring.
+ *   - Live DOM signals are collected by panel/messaging.js and passed as
+ *     bounded, value-free page hints.
  * -----------------------------------------------------------------------------
  */
 'use strict';
@@ -135,6 +136,9 @@
    * @param {object} [hints] Optional, caller-supplied signals. Any subset:
    *   {
    *     hasLoginForm:  boolean,   // page contains a password field
+   *     title: string,             // Chrome tab title (classification only)
+   *     fields: object[],          // bounded input metadata; never field values
+   *     safetyHintsUnavailable: boolean,
    *     isMarketingPage: boolean, // Readability / metadata positive signal
    *     isNewsArticle: boolean,
    *     isDocumentation: boolean,
@@ -196,10 +200,50 @@
       return { class: RULES.PAGE_CLASS.SENSITIVE, reason: 'hint-login-form', matched: null };
     }
 
+    const healthHost = hostnameMatchesAnySubstring(hostname, RULES.HEALTH_HOST_HINTS);
+    if (
+      healthHost &&
+      matchFirstPattern(H.title, RULES.HEALTH_PRIVATE_TITLE_PATTERNS)
+    ) {
+      return { class: RULES.PAGE_CLASS.SENSITIVE, reason: 'hint-health-private-title', matched: healthHost };
+    }
+
+    const governmentHost = hostnameMatchesAnySubstring(hostname, RULES.GOVERNMENT_HOST_HINTS);
+    if (
+      governmentHost &&
+      matchFirstPattern(H.title, RULES.GOVERNMENT_PRIVATE_TITLE_PATTERNS)
+    ) {
+      return { class: RULES.PAGE_CLASS.SENSITIVE, reason: 'hint-government-private-title', matched: governmentHost };
+    }
+
+    const fields = Array.isArray(H.fields) ? H.fields.slice(0, 100) : [];
+    for (let i = 0; i < fields.length; i++) {
+      const field = fields[i];
+      if (classifyField(field).class === RULES.FIELD_CLASS.CREDENTIAL) {
+        return { class: RULES.PAGE_CLASS.SENSITIVE, reason: 'hint-credential-field', matched: null };
+      }
+
+      const fieldHints = field && typeof field === 'object'
+        ? [field.name, field.id, field.placeholder, field.autocomplete, field.label, field.ariaLabel]
+          .filter(function (value) { return typeof value === 'string'; })
+          .join(' ')
+        : '';
+      if (RULES.HEALTH_PRIVATE_FIELD_PATTERN.test(fieldHints)) {
+        return { class: RULES.PAGE_CLASS.SENSITIVE, reason: 'hint-health-private-field', matched: null };
+      }
+      if (RULES.GOVERNMENT_PRIVATE_FIELD_PATTERN.test(fieldHints)) {
+        return { class: RULES.PAGE_CLASS.SENSITIVE, reason: 'hint-government-private-field', matched: null };
+      }
+    }
+
     // Private path pattern (inbox / drive / settings / etc.).
     const privateHit = matchFirstPattern(pathAndQuery, RULES.PRIVATE_PATH_PATTERNS);
     if (privateHit) {
       return { class: RULES.PAGE_CLASS.PRIVATE, reason: 'private-path', matched: privateHit };
+    }
+
+    if (H.safetyHintsUnavailable === true || H.fieldsTruncated === true) {
+      return { class: RULES.PAGE_CLASS.UNKNOWN, reason: 'safety-hints-unavailable', matched: hostname };
     }
 
     // Explicit benign hints.

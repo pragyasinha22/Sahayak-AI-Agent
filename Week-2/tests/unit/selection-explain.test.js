@@ -499,6 +499,148 @@ async function main() {
     }
   }
   // ==========================================================================
+  // Normal UI flow — selection message to callAI, plus no-message re-arm path.
+  // ==========================================================================
+  section('initUI — selection message reaches callAI and renders the response');
+  {
+    const selectedText = 'The article explains how volcanic islands form.';
+    let clickHandler = null;
+    let selectionListener = null;
+    const providerCalls = [];
+    const output = { textContent: '', className: '' };
+    const preview = { textContent: '' };
+    const button = {
+      addEventListener: (event, handler) => {
+        if (event === 'click') clickHandler = handler;
+      }
+    };
+    const fakeWin = {
+      document: {
+        readyState: 'complete',
+        getElementById: (id) => {
+          if (id === 'explain-btn') return button;
+          if (id === 'explain-output') return output;
+          if (id === 'explain-selection') return preview;
+          return null;
+        }
+      },
+      chrome: {
+        runtime: {
+          onMessage: {
+            addListener: (listener) => { selectionListener = listener; }
+          }
+        }
+      },
+      SahayakSafetyClassifiers: require('../../safety/classifiers.js'),
+      SahayakPanel: {
+        requestPageInfo: () => Promise.resolve({
+          tabId: 3,
+          url: 'https://en.wikipedia.org/wiki/Volcano'
+        }),
+        guardRead: () => Promise.resolve({ allowed: true })
+      },
+      SahayakStorageManager: {},
+      SahayakApiKeys: {
+        getGeminiKey: () => Promise.resolve('test-key')
+      },
+      SahayakProviders: {
+        callAI: (task) => {
+          providerCalls.push(task);
+          return Promise.resolve({ ok: true, text: 'A generated explanation.' });
+        }
+      },
+      SahayakLanguage: { current: () => 'en' }
+    };
+
+    Explain.initUI(fakeWin);
+    assert(typeof selectionListener === 'function' && typeof clickHandler === 'function',
+      'Explain registers its message and click handlers');
+
+    selectionListener(
+      { type: Explain.SELECTION_MESSAGE_TYPE, text: selectedText },
+      { tab: { id: 3 } }
+    );
+    assert(
+      preview.textContent === '\u201C' + selectedText + '\u201D',
+      'valid selection message updates the Explain preview'
+    );
+
+    clickHandler();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(
+      providerCalls.length === 1,
+      'Explain calls SahayakProviders.callAI exactly once for the selection'
+    );
+    assert(
+      providerCalls[0].prompt.indexOf(selectedText) !== -1,
+      'Explain retains the selection in its internal buffer and includes it in the provider prompt'
+    );
+    assert(
+      output.textContent === 'A generated explanation.' &&
+        output.className.indexOf('is-ok') !== -1,
+      'Explain renders the provider response as a successful answer'
+    );
+  }
+
+  section('initUI — no selection message stays in listening mode');
+  {
+    let clickHandler = null;
+    let selectionListener = null;
+    let providerCalls = 0;
+    const output = { textContent: '', className: '' };
+    const button = {
+      addEventListener: (event, handler) => {
+        if (event === 'click') clickHandler = handler;
+      }
+    };
+    const fakeWin = {
+      document: {
+        readyState: 'complete',
+        getElementById: (id) => {
+          if (id === 'explain-btn') return button;
+          if (id === 'explain-output') return output;
+          return null;
+        }
+      },
+      chrome: {
+        runtime: {
+          onMessage: {
+            addListener: (listener) => { selectionListener = listener; }
+          }
+        },
+        scripting: {
+          executeScript: () => Promise.resolve()
+        }
+      },
+      SahayakPanel: {
+        requestActiveTabId: () => Promise.resolve(3),
+        requestPageInfo: () => Promise.resolve({
+          tabId: 3,
+          url: 'https://en.wikipedia.org/wiki/Volcano'
+        }),
+        guardRead: () => Promise.resolve({ allowed: true })
+      },
+      SahayakProviders: {
+        callAI: () => {
+          providerCalls += 1;
+          return Promise.resolve({ ok: true, text: 'Unexpected answer.' });
+        }
+      }
+    };
+
+    Explain.initUI(fakeWin);
+    assert(typeof selectionListener === 'function' && typeof clickHandler === 'function',
+      'Explain registers handlers before selection arrives');
+    clickHandler();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(
+      output.textContent === Explain.ARM_OK_MESSAGE,
+      'without a selection message Explain remains in listening mode'
+    );
+    assert(providerCalls === 0,
+      'without a selection message Explain does not call the provider');
+  }
+  // ==========================================================================
   // ==========================================================================
   // Slice 2.1.3 — Gemini streaming provider
   // ==========================================================================

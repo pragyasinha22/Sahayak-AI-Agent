@@ -20,6 +20,27 @@
     "Sahayak couldn't get an answer from Gemini. Please try again.";
   var MSG_KEY_FAILED =
     "Sahayak couldn't retrieve the Gemini API key. Check Settings and try again.";
+  var MSG_STREAM_STOPPED =
+    "Sahayak's response stopped early. Ask again to continue.";
+
+  function toUserMessage(error, fallback) {
+    var errors = global.SahayakErrors;
+    return errors && typeof errors.toUserMessage === 'function'
+      ? errors.toUserMessage(error, fallback)
+      : (fallback || MSG_GEMINI_FAILED);
+  }
+
+  function showPanelError(error, fallback) {
+    var toast = global.SahayakErrorToast;
+    return toast && typeof toast.show === 'function'
+      ? toast.show(error, fallback)
+      : toUserMessage(error, fallback);
+  }
+
+  function clearPanelError() {
+    var toast = global.SahayakErrorToast;
+    if (toast && typeof toast.clear === 'function') toast.clear();
+  }
 
   function defaultInjectFiles() {
     var extract = global.SahayakExtract;
@@ -36,30 +57,16 @@
     return Promise.resolve(apiKeys.getGeminiKey(storageManager));
   }
 
-    function defaultCallAI(opts) {
-    var explain = global.SahayakExplain;
-
-    if (!explain) {
+  function defaultCallAI(opts) {
+    var providers = global.SahayakProviders;
+    if (!providers || typeof providers.callAI !== 'function') {
       return Promise.resolve({
         ok: false,
-        error: 'no-provider',
+        error: 'unavailable',
         message: MSG_GEMINI_FAILED
       });
     }
-
-    if (typeof explain.streamExplainSelection === 'function') {
-      return explain.streamExplainSelection(opts);
-    }
-
-    if (typeof explain.explainSelection === 'function') {
-      return explain.explainSelection(opts);
-    }
-
-    return Promise.resolve({
-      ok: false,
-      error: 'no-provider',
-      message: MSG_GEMINI_FAILED
-    });
+    return providers.callAI(opts);
   }
 
   function missingKeyMessage() {
@@ -93,6 +100,24 @@
       (global.SahayakPageChat && global.SahayakPageChat.buildPageChatPrompt);
     var question = (typeof d.question === 'string') ? d.question.trim() : '';
     var requestedTabId = Number.isInteger(d.tabId) ? d.tabId : null;
+    var streamedText = '';
+
+    function renderProviderFailure(error, fallback) {
+      var state = {
+        state: 'error',
+        error: global.SahayakErrors &&
+          typeof global.SahayakErrors.getKind === 'function'
+          ? global.SahayakErrors.getKind(error)
+          : 'network',
+        failure: error,
+        message: toUserMessage(error, fallback || MSG_GEMINI_FAILED)
+      };
+      if (streamedText) {
+        state.partialText = streamedText;
+        state.message = MSG_STREAM_STOPPED;
+      }
+      render(state);
+    }
 
     var havePanel = panel &&
       typeof panel.requestActiveTabId === 'function' &&
@@ -128,7 +153,11 @@
       })
       .then(function (step) {
         if (!step.decision || !step.decision.allowed) {
-          render({ state: 'error', message: MSG_CANNOT_READ });
+          render({
+            state: 'error',
+            error: 'safety-blocked',
+            message: MSG_CANNOT_READ
+          });
           return null;
         }
 
@@ -177,6 +206,7 @@
       .then(function (context) {
         if (!context) return;
 
+        streamedText = '';
         render({ state: 'answering' });
         return Promise.resolve()
           .then(function () { return getKey(); })
@@ -194,8 +224,10 @@
             return Promise.resolve(callAI({
               key: key,
               prompt: prompt,
+              taskType: 'page-chat',
               onChunk: function (chunk) {
                 if (typeof chunk !== 'string' || !chunk) return;
+                streamedText += chunk;
 
                 render({
                   state: 'streaming',
@@ -205,10 +237,10 @@
             }))
               .then(function (result) {
                 if (!result || !result.ok) {
-                  render({
-                    state: 'error',
-                    message: (result && result.message) || MSG_GEMINI_FAILED
-                  });
+                  renderProviderFailure(
+                    result || { error: 'unavailable' },
+                    (result && result.message) || MSG_GEMINI_FAILED
+                  );
                   return;
                 }
                 render({
@@ -217,8 +249,8 @@
                   truncated: context.truncated
                 });
               })
-              .catch(function () {
-                render({ state: 'error', message: MSG_GEMINI_FAILED });
+              .catch(function (error) {
+                renderProviderFailure(error, MSG_GEMINI_FAILED);
               });
           })
           .catch(function () {
@@ -319,9 +351,10 @@
             body.textContent = text;
             historyEl.scrollTop = historyEl.scrollHeight;
           },
-          finalize: function (text) {
+          finalize: function (text, isError) {
             body.textContent = '';
             appendFormattedText(body, text);
+            if (isError) article.className += ' is-error';
             historyEl.scrollTop = historyEl.scrollHeight;
           },
           remove: function () {
@@ -337,8 +370,9 @@
 
       function render(state, responseTabId) {
         if (!state) return;
-        // ----------------------------------
+        if (state.state === 'checking') clearPanelError();
         if (state.state === 'answering') {
+          clearPanelError();
           streamingText = '';
           if (streamingMessage) {
             streamingMessage.remove();
@@ -373,23 +407,36 @@
           statusEl.hidden = false;
           return;
         }
-       
 
         statusEl.textContent = '';
         statusEl.hidden = true;
-        if (state.state === 'ok') {
-          // ---------------------------------
-          if (
-            state.state === 'error' ||
-            state.state === 'missing-key'
-          ) {
+        if (state.state === 'error' || state.state === 'missing-key') {
+          var failure = state.failure || state;
+          var message = state.error || state.failure
+            ? showPanelError(failure, state.message || MSG_GEMINI_FAILED)
+            : (state.message || MSG_GEMINI_FAILED);
+
+          if (state.partialText) {
+            var partial = state.partialText + '\n\n' + MSG_STREAM_STOPPED;
+            if (streamingMessage) {
+              streamingMessage.finalize(partial, true);
+              streamingMessage = null;
+            } else if (activeTabId === responseTabId) {
+              appendMessage('assistant', partial, 'error');
+            }
+          } else if (activeTabId === responseTabId) {
             if (streamingMessage) {
               streamingMessage.remove();
               streamingMessage = null;
             }
-            streamingText = '';
+            appendMessage('assistant', message, 'error');
           }
-          
+          streamingText = '';
+          return;
+        }
+
+        if (state.state === 'ok') {
+          clearPanelError();
           var answer = (typeof state.text === 'string') ? state.text.trim() : '';
 
           var refusalSentence = global.SahayakPageChat &&

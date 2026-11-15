@@ -7,8 +7,9 @@
  *   1. Validates every incoming envelope via SahayakMessageContract.
  *   2. Answers `ping` directly so the panel can observe a round-trip without
  *      needing any content script running.
- *   3. Forwards tab-routed families (extract-article, scan-elements,
- *      capture-screenshot, execute-approved) to the target tab via
+ *   3. Captures the active visible tab for `capture-screenshot`; forwards
+ *      other tab-routed families (extract-article, scan-elements,
+ *      execute-approved) to the target tab via
  *      chrome.tabs.sendMessage, wrapping either the content reply or a
  *      graceful { ok:false, error:'no-content-script' } back to the panel.
  *
@@ -32,9 +33,9 @@
  *   - Approval-token verification for `execute-approved` -> Slice 3.4.4.
  *   - Safety-gate classification before routing          -> Slice 1.2.1.
  *   - Rate limiting / dedupe of identical ids            -> Slice 3.4.5.
- *   - chrome.tabs.captureVisibleTab for `capture-screenshot` -> Slice 3.1.1;
- *     Slice 1.1.4 only forwards the family to the target tab so a real
- *     content script can respond once Week 3 wires the screenshot itself.
+ *   - Screenshot capture uses the worker's tabs API after validating that the
+ *     requested tab is the active tab in its window. Crop selection remains
+ *     panel-owned; the worker never stores or logs image data.
  * -----------------------------------------------------------------------------
  */
 'use strict';
@@ -86,6 +87,69 @@
           source: contract.SOURCES.WORKER,
         });
         return false;
+      }
+
+      if (message.family === contract.FAMILIES.CAPTURE_SCREENSHOT) {
+        if (
+          !tabsApi ||
+          typeof tabsApi.get !== 'function' ||
+          typeof tabsApi.captureVisibleTab !== 'function'
+        ) {
+          sendResponse({
+            ok: false,
+            error: 'capture-unavailable',
+            requestId: message.id,
+            source: contract.SOURCES.WORKER,
+          });
+          return false;
+        }
+
+        const tabId = message.payload.tabId;
+        tabsApi.get(tabId, function (tab) {
+          if (
+            (runtimeApi && runtimeApi.lastError) ||
+            !tab ||
+            tab.active !== true ||
+            typeof tab.windowId !== 'number'
+          ) {
+            sendResponse({
+              ok: false,
+              error: 'capture-unavailable',
+              requestId: message.id,
+              source: contract.SOURCES.WORKER,
+            });
+            return;
+          }
+
+          tabsApi.captureVisibleTab(
+            tab.windowId,
+            { format: 'png' },
+            function (dataUrl) {
+              if (
+                (runtimeApi && runtimeApi.lastError) ||
+                typeof dataUrl !== 'string' ||
+                dataUrl.indexOf('data:image/') !== 0
+              ) {
+                sendResponse({
+                  ok: false,
+                  error: 'capture-unavailable',
+                  requestId: message.id,
+                  source: contract.SOURCES.WORKER,
+                });
+                return;
+              }
+
+              sendResponse({
+                ok: true,
+                result: { dataUrl: dataUrl },
+                requestId: message.id,
+                source: contract.SOURCES.WORKER,
+              });
+            }
+          );
+        });
+
+        return true;
       }
 
       // Tab-routed families forward to the content script in the given tab.

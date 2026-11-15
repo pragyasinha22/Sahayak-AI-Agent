@@ -236,6 +236,7 @@ async function main() {
   {
     const out = [];
     let capturedPrompt = '';
+    let capturedTaskType = '';
     const d = makeDeps();
     await Summarise.runSummarise({
       panel: d.panel, scripting: d.scripting,
@@ -243,6 +244,7 @@ async function main() {
       getKey: () => Promise.resolve('SECRET-KEY-123'),
       callAI: (opts) => {
         capturedPrompt = opts.prompt;
+        capturedTaskType = opts.taskType;
         return Promise.resolve({ ok: true, text: VALID_REPLY });
       }
     });
@@ -255,6 +257,8 @@ async function main() {
       'API key never appears in the prompt (GDR-3 / INV-2)');
     assert(capturedPrompt.indexOf(LONG_TEXT) !== -1,
       'the extracted plain text is what the model summarises');
+    assert(capturedTaskType === 'text-summary',
+      'marks article summaries as an explicitly Groq-eligible task');
 
     // Slice 1.7.1: with the panel language cached as hinglish, the prompt must
     // carry the Hinglish instruction token.

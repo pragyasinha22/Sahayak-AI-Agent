@@ -13,6 +13,10 @@
     "tabs",
     "clipboardWrite"
   ],
+  "host_permissions": [
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.groq.com/*"
+  ],
   "background": {
     "service_worker": "background/service-worker.js"
   },

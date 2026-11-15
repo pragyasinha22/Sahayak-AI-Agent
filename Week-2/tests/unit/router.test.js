@@ -326,6 +326,68 @@ async function run() {
     assert(r && r.requestId === 'm1', 'error response still echoes requestId');
   }
 
+  section('capture-screenshot uses the visible-tab API');
+  {
+    const calls = { gets: [], captures: [], sends: [] };
+    const runtime = { lastError: undefined };
+    const tabs = {
+      get(tabId, callback) {
+        calls.gets.push(tabId);
+        callback({ id: tabId, active: true, windowId: 12 });
+      },
+      captureVisibleTab(windowId, options, callback) {
+        calls.captures.push({ windowId, options });
+        callback('data:image/png;base64,visible-tab');
+      },
+      sendMessage(tabId, message, callback) {
+        calls.sends.push({ tabId, message });
+        callback({ ok: true });
+      },
+    };
+    const captureHandler = Router.makeHandler(contract, { tabs, runtime });
+    const response = await callHandler(captureHandler, {
+      id: 'capture-1',
+      family: 'capture-screenshot',
+      payload: { tabId: 42 },
+      source: 'panel',
+    });
+
+    assert(calls.gets.length === 1 && calls.gets[0] === 42,
+      'capture resolves the requested tab before capturing');
+    assert(calls.captures.length === 1 && calls.captures[0].windowId === 12,
+      'captureVisibleTab receives the originating tab window');
+    assert(calls.captures[0].options.format === 'png',
+      'capture requests a PNG image');
+    assert(calls.sends.length === 0,
+      'capture-screenshot is handled by the worker, not forwarded to a content script');
+    assert(response.ok && response.result.dataUrl === 'data:image/png;base64,visible-tab',
+      'capture response returns the image data to the panel');
+  }
+
+  {
+    const calls = { captures: 0 };
+    const captureHandler = Router.makeHandler(contract, {
+      tabs: {
+        get(tabId, callback) {
+          callback({ id: tabId, active: false, windowId: 12 });
+        },
+        captureVisibleTab() { calls.captures += 1; },
+        sendMessage() {},
+      },
+      runtime: { lastError: undefined },
+    });
+    const response = await callHandler(captureHandler, {
+      id: 'capture-inactive',
+      family: 'capture-screenshot',
+      payload: { tabId: 42 },
+      source: 'panel',
+    });
+    assert(!response.ok && response.error === 'capture-unavailable',
+      'capture refuses a tab that is no longer active');
+    assert(calls.captures === 0,
+      'capture does not capture another tab after the active tab changes');
+  }
+
   console.log('\n----------------------------------------');
   console.log('Summary: ' + pass + ' passed, ' + fail + ' failed.');
   if (fail > 0) {

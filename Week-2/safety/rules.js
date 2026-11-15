@@ -65,6 +65,28 @@
     UNKNOWN: 'unknown',       // unparseable / non-http / missing
   });
 
+  const HEALTH_HOST_HINTS = Object.freeze([
+    'health', 'medical', 'patient', 'hospital', 'clinic',
+  ]);
+  const GOVERNMENT_HOST_HINTS = Object.freeze([
+    'gov', 'government',
+  ]);
+  const HEALTH_PRIVATE_TITLE_PATTERNS = Object.freeze([
+    /\bpatient\s+(?:portal|account|records?|results?)\b/i,
+    /\bmy\s+(?:health|medical)\s+(?:records?|account|results?)\b/i,
+    /\b(?:prescription|lab|test)\s+(?:history|results?)\b/i,
+    /\bmedical\s+records?\b/i,
+  ]);
+  const GOVERNMENT_PRIVATE_TITLE_PATTERNS = Object.freeze([
+    /\b(?:tax|taxpayer)\s+(?:account|return|records?|portal)\b/i,
+    /\b(?:benefit|citizen|passport|social\s+security|national\s+id)\s+(?:account|portal|claim|application|status|records?|number)\b/i,
+    /\bmy\s+(?:government|benefits?|tax|passport)\b/i,
+  ]);
+  const HEALTH_PRIVATE_FIELD_PATTERN =
+    /\b(?:patient|medical|health)\s*(?:record|portal|account|id|number|result|prescription|diagnosis|insurance|claim|history)\b/i;
+  const GOVERNMENT_PRIVATE_FIELD_PATTERN =
+    /\b(?:taxpayer|tax|social\s*security|national\s*id|passport|benefit|citizen|voter)\s*(?:id|number|account|claim|record|portal|application|status)\b/i;
+
   /**
    * Field / element classifications. `credential` covers password, OTP, and
    * card-information fields (PS §2.20). `consequential` covers Submit / Pay /
@@ -331,6 +353,12 @@
     // Enums
     DECISION,
     PAGE_CLASS,
+    HEALTH_HOST_HINTS,
+    GOVERNMENT_HOST_HINTS,
+    HEALTH_PRIVATE_TITLE_PATTERNS,
+    GOVERNMENT_PRIVATE_TITLE_PATTERNS,
+    HEALTH_PRIVATE_FIELD_PATTERN,
+    GOVERNMENT_PRIVATE_FIELD_PATTERN,
     FIELD_CLASS,
     CREDENTIAL_KIND,
     CONSEQUENTIAL_KIND,

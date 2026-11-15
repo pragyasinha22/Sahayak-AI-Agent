@@ -36,31 +36,8 @@
 
   function getSelectionDiagnostics(text) {
     var value = typeof text === 'string' ? text : '';
-    var focus = value.indexOf(', and ');
-    if (focus !== -1) {
-      focus += 2;
-    } else {
-      focus = value.toLowerCase().indexOf('what');
-      if (focus === -1) focus = value.indexOf(';');
-    }
-
-    var start = focus === -1 ? 0 : Math.max(0, focus - 2);
-    var end = Math.min(value.length, start + 18);
-    var codeUnits = [];
-    for (var index = start; index < end; index += 1) {
-      codeUnits.push(value.charCodeAt(index));
-    }
-
-    var hash = 2166136261;
-    for (var hashIndex = 0; hashIndex < value.length; hashIndex += 1) {
-      hash = Math.imul(hash ^ value.charCodeAt(hashIndex), 16777619);
-    }
-
     return {
-      length: value.length,
-      fingerprint: (hash >>> 0).toString(16),
-      windowStart: start,
-      codeUnits: codeUnits
+      length: value.length
     };
   }
 
